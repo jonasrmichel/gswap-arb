@@ -6,100 +6,100 @@
   <defs>
     <radialGradient id="bodyGradient" cx="50%" cy="30%" r="70%">
       <stop offset="0%" style="stop-color:#c77dff"/>
-      <stop offset="100%" style="stop-color:#7b2cbf"/>
+      <stop offset="100%" style="stop-color:#9d4edd"/>
     </radialGradient>
-    <radialGradient id="chestGradient" cx="50%" cy="30%" r="70%">
-      <stop offset="0%" style="stop-color:#e0aaff"/>
-      <stop offset="100%" style="stop-color:#c77dff"/>
+    <radialGradient id="bellyGradient" cx="50%" cy="30%" r="70%">
+      <stop offset="0%" style="stop-color:#f3e8ff"/>
+      <stop offset="100%" style="stop-color:#e0aaff"/>
     </radialGradient>
-    <linearGradient id="wingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#9d4edd"/>
-      <stop offset="100%" style="stop-color:#5a189a"/>
-    </linearGradient>
   </defs>
 
-  <!-- Ear tufts -->
-  <path d="M 55 45 L 45 20 L 65 40 Z" fill="url(#bodyGradient)"/>
-  <path d="M 145 45 L 155 20 L 135 40 Z" fill="url(#bodyGradient)"/>
+  <!-- Body (round and chubby) -->
+  <ellipse cx="100" cy="115" rx="50" ry="55" fill="url(#bodyGradient)"/>
 
-  <!-- Inner ear tufts -->
-  <path d="M 57 45 L 50 28 L 63 42 Z" fill="#e0aaff"/>
-  <path d="M 143 45 L 150 28 L 137 42 Z" fill="#e0aaff"/>
+  <!-- Head (big and round for cuteness) -->
+  <circle cx="100" cy="70" r="45" fill="url(#bodyGradient)"/>
 
-  <!-- Main body -->
-  <ellipse cx="100" cy="110" rx="55" ry="60" fill="url(#bodyGradient)"/>
+  <!-- Ear tufts (small and rounded) -->
+  <ellipse cx="65" cy="35" rx="8" ry="15" fill="#9d4edd" transform="rotate(-20 65 35)"/>
+  <ellipse cx="135" cy="35" rx="8" ry="15" fill="#9d4edd" transform="rotate(20 135 35)"/>
+  <ellipse cx="65" cy="38" rx="5" ry="10" fill="#e0aaff" transform="rotate(-20 65 38)"/>
+  <ellipse cx="135" cy="38" rx="5" ry="10" fill="#e0aaff" transform="rotate(20 135 38)"/>
 
-  <!-- Head -->
-  <ellipse cx="100" cy="75" rx="50" ry="42" fill="url(#bodyGradient)"/>
+  <!-- Belly (light colored, round) -->
+  <ellipse cx="100" cy="125" rx="32" ry="38" fill="url(#bellyGradient)"/>
 
-  <!-- Wings -->
-  <path d="M 45 90 Q 25 110 30 145 Q 35 160 50 155 Q 55 140 55 120 Q 55 100 50 90 Z" fill="url(#wingGradient)"/>
-  <path d="M 155 90 Q 175 110 170 145 Q 165 160 150 155 Q 145 140 145 120 Q 145 100 150 90 Z" fill="url(#wingGradient)"/>
+  <!-- Belly pattern (cute scalloped feathers) -->
+  <path d="M 75 105 Q 85 112 100 108 Q 115 112 125 105" stroke="#c77dff" stroke-width="2" fill="none" opacity="0.5"/>
+  <path d="M 72 120 Q 85 128 100 123 Q 115 128 128 120" stroke="#c77dff" stroke-width="2" fill="none" opacity="0.5"/>
+  <path d="M 75 135 Q 87 143 100 138 Q 113 143 125 135" stroke="#c77dff" stroke-width="2" fill="none" opacity="0.5"/>
 
-  <!-- Wing feather details -->
-  <path d="M 40 115 Q 45 115 50 110" stroke="#e0aaff" stroke-width="2" fill="none" opacity="0.5"/>
-  <path d="M 38 130 Q 45 130 52 122" stroke="#e0aaff" stroke-width="2" fill="none" opacity="0.5"/>
-  <path d="M 160 115 Q 155 115 150 110" stroke="#e0aaff" stroke-width="2" fill="none" opacity="0.5"/>
-  <path d="M 162 130 Q 155 130 148 122" stroke="#e0aaff" stroke-width="2" fill="none" opacity="0.5"/>
+  <!-- Face disc (lighter area around eyes) -->
+  <ellipse cx="100" cy="72" rx="38" ry="32" fill="#e0aaff" opacity="0.4"/>
 
-  <!-- Chest/belly pattern -->
-  <ellipse cx="100" cy="120" rx="30" ry="40" fill="url(#chestGradient)"/>
+  <!-- Big cute eyes (white background) -->
+  <ellipse cx="78" cy="70" rx="18" ry="20" fill="white"/>
+  <ellipse cx="122" cy="70" rx="18" ry="20" fill="white"/>
 
-  <!-- Chest feather pattern -->
-  <path d="M 85 100 Q 100 105 115 100" stroke="#9d4edd" stroke-width="1.5" fill="none" opacity="0.6"/>
-  <path d="M 82 115 Q 100 122 118 115" stroke="#9d4edd" stroke-width="1.5" fill="none" opacity="0.6"/>
-  <path d="M 85 130 Q 100 138 115 130" stroke="#9d4edd" stroke-width="1.5" fill="none" opacity="0.6"/>
-  <path d="M 88 145 Q 100 152 112 145" stroke="#9d4edd" stroke-width="1.5" fill="none" opacity="0.6"/>
+  <!-- Irises (big and sparkly) -->
+  <circle cx="80" cy="72" r="12" fill="#7c3aed"/>
+  <circle cx="120" cy="72" r="12" fill="#7c3aed"/>
 
-  <!-- Eye circles (large owl eyes) -->
-  <circle cx="75" cy="70" r="22" fill="#1a1a2e" stroke="#9d4edd" stroke-width="3"/>
-  <circle cx="125" cy="70" r="22" fill="#1a1a2e" stroke="#9d4edd" stroke-width="3"/>
+  <!-- Pupils (looking up playfully) -->
+  <circle cx="82" cy="70" r="6" fill="#1a1a2e"/>
+  <circle cx="122" cy="70" r="6" fill="#1a1a2e"/>
 
-  <!-- Eye whites -->
-  <circle cx="75" cy="70" r="18" fill="white"/>
-  <circle cx="125" cy="70" r="18" fill="white"/>
+  <!-- Eye sparkles (multiple for cute anime effect) -->
+  <circle cx="85" cy="66" r="4" fill="white"/>
+  <circle cx="125" cy="66" r="4" fill="white"/>
+  <circle cx="78" cy="74" r="2" fill="white"/>
+  <circle cx="118" cy="74" r="2" fill="white"/>
 
-  <!-- Irises -->
-  <circle cx="75" cy="70" r="12" fill="#f59e0b"/>
-  <circle cx="125" cy="70" r="12" fill="#f59e0b"/>
+  <!-- Happy curved eyebrows -->
+  <path d="M 60 55 Q 72 50 88 55" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 140 55 Q 128 50 112 55" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
 
-  <!-- Pupils (slightly upward for cheerful look) -->
-  <circle cx="75" cy="68" r="6" fill="#1a1a2e"/>
-  <circle cx="125" cy="68" r="6" fill="#1a1a2e"/>
+  <!-- Rosy cheeks -->
+  <ellipse cx="55" cy="82" rx="10" ry="6" fill="#ff9ecd" opacity="0.6"/>
+  <ellipse cx="145" cy="82" rx="10" ry="6" fill="#ff9ecd" opacity="0.6"/>
 
-  <!-- Eye highlights (larger for cuter look) -->
-  <circle cx="78" cy="64" r="4" fill="white"/>
-  <circle cx="128" cy="64" r="4" fill="white"/>
-  <circle cx="72" cy="70" r="2" fill="white"/>
-  <circle cx="122" cy="70" r="2" fill="white"/>
+  <!-- Small cute beak -->
+  <ellipse cx="100" cy="90" rx="8" ry="6" fill="#f59e0b"/>
+  <path d="M 94 90 Q 100 96 106 90" stroke="#d97706" stroke-width="1.5" fill="none"/>
 
-  <!-- Beak -->
-  <path d="M 100 82 L 93 95 L 100 105 L 107 95 Z" fill="#f59e0b"/>
-  <path d="M 100 88 L 96 95 L 100 100 L 104 95 Z" fill="#d97706"/>
+  <!-- Little wings (tucked in, cute) -->
+  <ellipse cx="55" cy="115" rx="12" ry="25" fill="#9d4edd" transform="rotate(15 55 115)"/>
+  <ellipse cx="145" cy="115" rx="12" ry="25" fill="#9d4edd" transform="rotate(-15 145 115)"/>
 
-  <!-- Eyebrows (happy, friendly look - curved upward) -->
-  <path d="M 55 58 Q 70 52 85 58" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
-  <path d="M 145 58 Q 130 52 115 58" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Wing highlights -->
+  <ellipse cx="57" cy="110" rx="6" ry="15" fill="#c77dff" transform="rotate(15 57 110)"/>
+  <ellipse cx="143" cy="110" rx="6" ry="15" fill="#c77dff" transform="rotate(-15 143 110)"/>
 
-  <!-- Rosy cheeks for friendly appearance -->
-  <ellipse cx="52" cy="85" rx="8" ry="5" fill="#e0aaff" opacity="0.5"/>
-  <ellipse cx="148" cy="85" rx="8" ry="5" fill="#e0aaff" opacity="0.5"/>
+  <!-- Tiny feet -->
+  <ellipse cx="85" cy="168" rx="10" ry="5" fill="#f59e0b"/>
+  <ellipse cx="115" cy="168" rx="10" ry="5" fill="#f59e0b"/>
+  <circle cx="78" cy="170" r="3" fill="#d97706"/>
+  <circle cx="85" cy="171" r="3" fill="#d97706"/>
+  <circle cx="92" cy="170" r="3" fill="#d97706"/>
+  <circle cx="108" cy="170" r="3" fill="#d97706"/>
+  <circle cx="115" cy="171" r="3" fill="#d97706"/>
+  <circle cx="122" cy="170" r="3" fill="#d97706"/>
 
-  <!-- Feet -->
-  <ellipse cx="85" cy="168" rx="12" ry="6" fill="#f59e0b"/>
-  <ellipse cx="115" cy="168" rx="12" ry="6" fill="#f59e0b"/>
-  <circle cx="78" cy="170" r="4" fill="#d97706"/>
-  <circle cx="85" cy="172" r="4" fill="#d97706"/>
-  <circle cx="92" cy="170" r="4" fill="#d97706"/>
-  <circle cx="108" cy="170" r="4" fill="#d97706"/>
-  <circle cx="115" cy="172" r="4" fill="#d97706"/>
-  <circle cx="122" cy="170" r="4" fill="#d97706"/>
-
-  <!-- Trading arrows (representing arbitrage) -->
-  <g transform="translate(30, 55)">
-    <polygon points="0,0 10,5 0,10 3,5" fill="#10b981"/>
+  <!-- Sparkles around owl (playful effect) -->
+  <g fill="#e0aaff">
+    <path d="M 30 50 L 33 55 L 30 60 L 27 55 Z"/>
+    <path d="M 170 50 L 173 55 L 170 60 L 167 55 Z"/>
+    <path d="M 25 130 L 27 133 L 25 136 L 23 133 Z"/>
+    <path d="M 175 130 L 177 133 L 175 136 L 173 133 Z"/>
   </g>
-  <g transform="translate(160, 55)">
-    <polygon points="10,0 0,5 10,10 7,5" fill="#ef4444"/>
+
+  <!-- Trading arrows (small and cute) -->
+  <g transform="translate(35, 155)">
+    <circle cx="5" cy="5" r="8" fill="#10b981" opacity="0.3"/>
+    <polygon points="2,5 8,2 8,8" fill="#10b981"/>
+  </g>
+  <g transform="translate(155, 155)">
+    <circle cx="5" cy="5" r="8" fill="#ef4444" opacity="0.3"/>
+    <polygon points="8,5 2,2 2,8" fill="#ef4444"/>
   </g>
 </svg>
