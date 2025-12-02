@@ -207,11 +207,11 @@ func printConfig(cfg *config.Config, agg *websocket.PriceAggregator) {
 // setupWebSocketProviders adds WebSocket providers based on configuration.
 func setupWebSocketProviders(agg *websocket.PriceAggregator, cfg *config.Config) {
 	for _, ex := range cfg.GetEnabledExchanges() {
-		if ex.Type != "cex" {
-			continue // Only CEXs have WebSocket support in this implementation
-		}
-
 		switch ex.ID {
+		case "gswap":
+			// GSwap uses REST polling (no WebSocket available)
+			agg.AddProvider(websocket.NewGSwapPollerProvider(5 * time.Second))
+			fmt.Printf("Added GSwap polling provider (5s interval)\n")
 		case "binance":
 			agg.AddProvider(websocket.NewBinanceWSProvider())
 			fmt.Printf("Added Binance WebSocket provider\n")
