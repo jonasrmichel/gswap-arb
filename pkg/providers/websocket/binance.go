@@ -15,6 +15,7 @@ import (
 
 const (
 	binanceWSURL       = "wss://stream.binance.com:9443/ws"
+	binanceUSWSURL     = "wss://stream.binance.us:9443/ws"
 	binanceCombinedURL = "wss://stream.binance.com:9443/stream"
 )
 
@@ -27,6 +28,7 @@ type BinanceWSProvider struct {
 	cancel    context.CancelFunc
 	msgID     int
 	msgIDMu   sync.Mutex
+	useUS     bool // Use Binance.US endpoint
 }
 
 // NewBinanceWSProvider creates a new Binance WebSocket provider.
@@ -41,6 +43,7 @@ func NewBinanceWSProvider() *BinanceWSProvider {
 }
 
 // Connect establishes the WebSocket connection to Binance.
+// It tries the global endpoint first, then falls back to Binance.US if that fails.
 func (b *BinanceWSProvider) Connect(ctx context.Context) error {
 	b.connMu.Lock()
 	defer b.connMu.Unlock()
@@ -56,7 +59,23 @@ func (b *BinanceWSProvider) Connect(ctx context.Context) error {
 		HandshakeTimeout: 10 * time.Second,
 	}
 
-	conn, _, err := dialer.DialContext(ctx, binanceWSURL, nil)
+	// Try global Binance first (unless we already know to use US)
+	wsURL := binanceWSURL
+	if b.useUS {
+		wsURL = binanceUSWSURL
+	}
+
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		// If global failed and we haven't tried US yet, try Binance.US
+		if !b.useUS {
+			conn, _, err = dialer.DialContext(ctx, binanceUSWSURL, nil)
+			if err == nil {
+				b.useUS = true // Remember to use US endpoint for reconnects
+			}
+		}
+	}
+
 	if err != nil {
 		b.SetState(StateDisconnected)
 		return fmt.Errorf("failed to connect to Binance WebSocket: %w", err)
