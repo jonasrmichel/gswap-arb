@@ -1,0 +1,121 @@
+{
+  "update_interval_ms": 15000,
+  "verbose": true,
+  "dry_run": true,
+  "arbitrage": {
+    "min_spread_bps": 50,
+    "min_net_profit_bps": 20,
+    "max_price_impact_bps": 500,
+    "default_trade_size": 1000,
+    "quote_validity_secs": 30
+  },
+  "exchanges": [
+    {
+      "id": "gswap",
+      "name": "GSwap (GalaChain)",
+      "type": "dex",
+      "enabled": true
+    },
+    {
+      "id": "binance",
+      "name": "Binance",
+      "type": "cex",
+      "enabled": true
+    },
+    {
+      "id": "coinbase",
+      "name": "Coinbase",
+      "type": "cex",
+      "enabled": true
+    },
+    {
+      "id": "kraken",
+      "name": "Kraken",
+      "type": "cex",
+      "enabled": true
+    },
+    {
+      "id": "okx",
+      "name": "OKX",
+      "type": "cex",
+      "enabled": false
+    },
+    {
+      "id": "bybit",
+      "name": "Bybit",
+      "type": "cex",
+      "enabled": false
+    },
+    {
+      "id": "kucoin",
+      "name": "KuCoin",
+      "type": "cex",
+      "enabled": false
+    },
+    {
+      "id": "gate",
+      "name": "Gate.io",
+      "type": "cex",
+      "enabled": false
+    }
+  ],
+  "tokens": [
+    {
+      "symbol": "GALA",
+      "name": "Gala",
+      "decimals": 8,
+      "galachain_mint": "GALA|Unit|none|none"
+    },
+    {
+      "symbol": "ETH",
+      "name": "Ethereum",
+      "decimals": 18
+    },
+    {
+      "symbol": "USDT",
+      "name": "Tether",
+      "decimals": 6
+    },
+    {
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6
+    },
+    {
+      "symbol": "BTC",
+      "name": "Bitcoin",
+      "decimals": 8
+    },
+    {
+      "symbol": "SOL",
+      "name": "Solana",
+      "decimals": 9
+    }
+  ],
+  "pairs": [
+    {
+      "pair": "GALA/USDT",
+      "exchanges": ["gswap", "binance", "coinbase", "kraken"],
+      "enabled": true,
+      "trade_size": 50000
+    },
+    {
+      "pair": "ETH/USDT",
+      "exchanges": ["gswap", "binance", "coinbase", "kraken"],
+      "enabled": true,
+      "trade_size": 1
+    },
+    {
+      "pair": "BTC/USDT",
+      "exchanges": ["binance", "coinbase", "kraken"],
+      "enabled": true,
+      "trade_size": 0.05
+    },
+    {
+      "pair": "SOL/USDT",
+      "exchanges": ["binance", "coinbase", "kraken"],
+      "enabled": true,
+      "trade_size": 10
+    }
+  ]
+}
