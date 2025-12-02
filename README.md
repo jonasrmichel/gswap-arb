@@ -11,7 +11,8 @@
 ## Features
 
 - **Multi-exchange support**: Monitors GSwap (GalaChain DEX) and major CEXs including:
-  - Binance
+  - **GSwap** (GalaChain DEX) - REST polling with 5s intervals
+  - Binance (with Binance.US fallback)
   - Coinbase
   - Kraken
   - OKX
@@ -21,6 +22,7 @@
 
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
 - **WebSocket support**: Real-time price feeds for ultra-low latency detection
+- **GSwap DEX integration**: Polls GalaChain composite pool API for DEX prices
 - **Configurable thresholds**: Set minimum spread, profit margins, and trade sizes
 - **Multiple output formats**: Text, JSON, or CSV
 - **Dry-run mode**: Detect opportunities without executing trades
@@ -49,6 +51,7 @@ gswap-arb/
 │   │   └── websocket/
 │   │       ├── types.go      # WebSocket types & base provider
 │   │       ├── aggregator.go # Multi-exchange price aggregator
+│   │       ├── gswap_poller.go # GSwap REST polling provider
 │   │       ├── binance.go    # Binance WebSocket
 │   │       ├── coinbase.go   # Coinbase WebSocket
 │   │       ├── kraken.go     # Kraken WebSocket
@@ -311,13 +314,23 @@ The WebSocket implementation provides real-time price feeds with automatic recon
 
 ### Supported Exchanges
 
-| Exchange | WebSocket Endpoint | Features |
-|----------|-------------------|----------|
-| Binance | `wss://stream.binance.com:9443/ws` | Book ticker (best bid/ask) |
-| Coinbase | `wss://ws-feed.exchange.coinbase.com` | Full ticker with 24h stats |
-| Kraken | `wss://ws.kraken.com` | Ticker with volume |
-| OKX | `wss://ws.okx.com:8443/ws/v5/public` | Ticker with 24h stats |
-| Bybit | `wss://stream.bybit.com/v5/public/spot` | Ticker with best bid/ask |
+| Exchange | Connection Type | Endpoint | Features |
+|----------|----------------|----------|----------|
+| **GSwap** | REST Polling (5s) | GalaChain API | Composite pool prices, DEX liquidity |
+| Binance | WebSocket | `wss://stream.binance.com:9443/ws` | Book ticker (best bid/ask), US fallback |
+| Coinbase | WebSocket | `wss://ws-feed.exchange.coinbase.com` | Full ticker with 24h stats |
+| Kraken | WebSocket | `wss://ws.kraken.com` | Ticker with volume |
+| OKX | WebSocket | `wss://ws.okx.com:8443/ws/v5/public` | Ticker with 24h stats |
+| Bybit | WebSocket | `wss://stream.bybit.com/v5/public/spot` | Ticker with best bid/ask |
+
+### GSwap DEX Integration
+
+GSwap (GalaChain DEX) doesn't provide a WebSocket API, so the bot uses a polling wrapper that:
+
+- Fetches prices from the GalaChain composite pool API every 5 seconds
+- Maps CEX pair names to GSwap equivalents (e.g., `GALA/USDT` ↔ `GUSDT/GALA`)
+- Integrates seamlessly with the price aggregator for arbitrage detection
+- Supports wrapped GalaChain tokens: GUSDT, GUSDC, GWETH, GBTC, GSOL
 
 ### Price Aggregator
 
@@ -332,6 +345,7 @@ aggregator := websocket.NewPriceAggregator(&websocket.AggregatorConfig{
 })
 
 // Add providers
+aggregator.AddProvider(websocket.NewGSwapPollerProvider(5 * time.Second)) // GSwap DEX
 aggregator.AddProvider(websocket.NewBinanceWSProvider())
 aggregator.AddProvider(websocket.NewCoinbaseWSProvider())
 
@@ -363,7 +377,8 @@ aggregator.Start(ctx, []string{"BTC/USDT", "ETH/USDT"})
 - [ ] Telegram/Discord notifications
 - [ ] Multi-hop arbitrage detection (triangular arbitrage)
 - [ ] Gas/transaction cost estimation for DEX trades
-- [ ] GSwap WebSocket support (when available)
+- [ ] GSwap WebSocket support (when available from GalaChain)
+- [ ] Additional GalaChain token pairs
 
 ## License
 
