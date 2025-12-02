@@ -1,6 +1,12 @@
-# GSwap Arbitrage Bot
+<p align="center">
+  <img src="logo.svg" alt="GSwap Arbitrage Bot Logo" width="150" height="150">
+</p>
 
-A Golang-based cryptocurrency arbitrage detection bot that monitors price discrepancies between GalaChain/GSwap (DEX) and major centralized exchanges (CEXs).
+<h1 align="center">GSwap Arbitrage Bot</h1>
+
+<p align="center">
+  A Golang-based cryptocurrency arbitrage detection bot that monitors price discrepancies between GalaChain/GSwap (DEX) and major centralized exchanges (CEXs).
+</p>
 
 ## Features
 

@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="#1a1a2e" stroke="#7b2cbf" stroke-width="3"/>
+
+  <!-- Octopus head -->
+  <ellipse cx="100" cy="75" rx="45" ry="40" fill="#9d4edd"/>
+  <ellipse cx="100" cy="75" rx="45" ry="40" fill="url(#headGradient)"/>
+
+  <!-- Head gradient -->
+  <defs>
+    <radialGradient id="headGradient" cx="40%" cy="30%" r="60%">
+      <stop offset="0%" style="stop-color:#c77dff"/>
+      <stop offset="100%" style="stop-color:#7b2cbf"/>
+    </radialGradient>
+    <radialGradient id="tentacleGradient" cx="50%" cy="0%" r="100%">
+      <stop offset="0%" style="stop-color:#9d4edd"/>
+      <stop offset="100%" style="stop-color:#5a189a"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Eyes -->
+  <ellipse cx="82" cy="70" rx="12" ry="14" fill="white"/>
+  <ellipse cx="118" cy="70" rx="12" ry="14" fill="white"/>
+  <circle cx="85" cy="72" r="6" fill="#1a1a2e"/>
+  <circle cx="121" cy="72" r="6" fill="#1a1a2e"/>
+  <circle cx="87" cy="70" r="2" fill="white"/>
+  <circle cx="123" cy="70" r="2" fill="white"/>
+
+  <!-- Smile -->
+  <path d="M 85 90 Q 100 102 115 90" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Tentacles -->
+  <!-- Left tentacles -->
+  <path d="M 60 95 Q 30 120 25 155 Q 22 170 35 168" stroke="url(#tentacleGradient)" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <path d="M 70 100 Q 45 135 50 165 Q 52 180 65 175" stroke="url(#tentacleGradient)" stroke-width="11" fill="none" stroke-linecap="round"/>
+  <path d="M 80 105 Q 65 145 75 170 Q 78 185 90 178" stroke="url(#tentacleGradient)" stroke-width="10" fill="none" stroke-linecap="round"/>
+
+  <!-- Right tentacles -->
+  <path d="M 140 95 Q 170 120 175 155 Q 178 170 165 168" stroke="url(#tentacleGradient)" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <path d="M 130 100 Q 155 135 150 165 Q 148 180 135 175" stroke="url(#tentacleGradient)" stroke-width="11" fill="none" stroke-linecap="round"/>
+  <path d="M 120 105 Q 135 145 125 170 Q 122 185 110 178" stroke="url(#tentacleGradient)" stroke-width="10" fill="none" stroke-linecap="round"/>
+
+  <!-- Center tentacles -->
+  <path d="M 95 110 Q 88 150 92 175 Q 93 188 100 185" stroke="url(#tentacleGradient)" stroke-width="9" fill="none" stroke-linecap="round"/>
+  <path d="M 105 110 Q 112 150 108 175 Q 107 188 100 185" stroke="url(#tentacleGradient)" stroke-width="9" fill="none" stroke-linecap="round"/>
+
+  <!-- Suction cups (dots on tentacles) -->
+  <circle cx="32" cy="155" r="3" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="38" cy="140" r="2.5" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="55" cy="160" r="3" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="58" cy="145" r="2.5" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="168" cy="155" r="3" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="162" cy="140" r="2.5" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="145" cy="160" r="3" fill="#e0aaff" opacity="0.7"/>
+  <circle cx="142" cy="145" r="2.5" fill="#e0aaff" opacity="0.7"/>
+
+  <!-- Trading arrows (representing arbitrage) -->
+  <g transform="translate(100, 45)" fill="#10b981">
+    <polygon points="0,-12 8,-4 3,-4 3,4 -3,4 -3,-4 -8,-4" transform="rotate(-30)"/>
+  </g>
+  <g transform="translate(100, 45)" fill="#f59e0b">
+    <polygon points="0,12 8,4 3,4 3,-4 -3,-4 -3,4 -8,4" transform="translate(20, 5) rotate(30)"/>
+  </g>
+</svg>
