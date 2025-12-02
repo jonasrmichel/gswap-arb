@@ -63,21 +63,27 @@
   <circle cx="75" cy="70" r="12" fill="#f59e0b"/>
   <circle cx="125" cy="70" r="12" fill="#f59e0b"/>
 
-  <!-- Pupils -->
-  <circle cx="75" cy="70" r="6" fill="#1a1a2e"/>
-  <circle cx="125" cy="70" r="6" fill="#1a1a2e"/>
+  <!-- Pupils (slightly upward for cheerful look) -->
+  <circle cx="75" cy="68" r="6" fill="#1a1a2e"/>
+  <circle cx="125" cy="68" r="6" fill="#1a1a2e"/>
 
-  <!-- Eye highlights -->
-  <circle cx="79" cy="66" r="3" fill="white"/>
-  <circle cx="129" cy="66" r="3" fill="white"/>
+  <!-- Eye highlights (larger for cuter look) -->
+  <circle cx="78" cy="64" r="4" fill="white"/>
+  <circle cx="128" cy="64" r="4" fill="white"/>
+  <circle cx="72" cy="70" r="2" fill="white"/>
+  <circle cx="122" cy="70" r="2" fill="white"/>
 
   <!-- Beak -->
   <path d="M 100 82 L 93 95 L 100 105 L 107 95 Z" fill="#f59e0b"/>
   <path d="M 100 88 L 96 95 L 100 100 L 104 95 Z" fill="#d97706"/>
 
-  <!-- Eyebrows (wise owl look) -->
-  <path d="M 55 52 Q 70 48 85 55" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
-  <path d="M 145 52 Q 130 48 115 55" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Eyebrows (happy, friendly look - curved upward) -->
+  <path d="M 55 58 Q 70 52 85 58" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M 145 58 Q 130 52 115 58" stroke="#5a189a" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Rosy cheeks for friendly appearance -->
+  <ellipse cx="52" cy="85" rx="8" ry="5" fill="#e0aaff" opacity="0.5"/>
+  <ellipse cx="148" cy="85" rx="8" ry="5" fill="#e0aaff" opacity="0.5"/>
 
   <!-- Feet -->
   <ellipse cx="85" cy="168" rx="12" ry="6" fill="#f59e0b"/>
