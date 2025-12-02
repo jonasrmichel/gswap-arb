@@ -55,9 +55,9 @@
   <circle cx="78" cy="74" r="2" fill="white"/>
   <circle cx="118" cy="74" r="2" fill="white"/>
 
-  <!-- Happy curved eyebrows -->
-  <path d="M 60 55 Q 72 50 88 55" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-  <path d="M 140 55 Q 128 50 112 55" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Happy eyebrows (angled upward toward center) -->
+  <path d="M 60 58 Q 70 52 85 48" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M 140 58 Q 130 52 115 48" stroke="#7b2cbf" stroke-width="2.5" fill="none" stroke-linecap="round"/>
 
   <!-- Rosy cheeks -->
   <ellipse cx="55" cy="82" rx="10" ry="6" fill="#ff9ecd" opacity="0.6"/>
