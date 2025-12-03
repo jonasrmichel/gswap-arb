@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jonasrmichel/gswap-arb/pkg/config"
+	"github.com/jonasrmichel/gswap-arb/pkg/notifier"
 	"github.com/jonasrmichel/gswap-arb/pkg/providers/websocket"
 	"github.com/jonasrmichel/gswap-arb/pkg/reporter"
 	"github.com/jonasrmichel/gswap-arb/pkg/types"
@@ -83,6 +84,20 @@ func main() {
 	// Print configuration summary
 	printConfig(cfg, aggregator)
 
+	// Create Slack notifier
+	slackNotifier := notifier.NewSlackNotifier(&notifier.SlackConfig{
+		APIToken: cfg.Slack.APIToken,
+		Channel:  cfg.Slack.Channel,
+		Enabled:  cfg.Slack.Enabled,
+	})
+
+	if slackNotifier.IsEnabled() {
+		fmt.Println("Slack notifications enabled")
+		if err := slackNotifier.SendTestMessage(); err != nil {
+			fmt.Printf("Warning: Failed to send Slack test message: %v\n", err)
+		}
+	}
+
 	// Set up callbacks
 	if *showUpdates {
 		aggregator.OnPriceUpdate(func(update *websocket.PriceUpdate) {
@@ -106,6 +121,11 @@ func main() {
 	aggregator.OnArbitrage(func(opp *types.ArbitrageOpportunity) {
 		opportunities = append(opportunities, opp)
 
+		// Notify Slack about opportunity
+		if err := slackNotifier.NotifyArbitrageOpportunity(opp); err != nil {
+			fmt.Printf("  [SLACK ERROR] %v\n", err)
+		}
+
 		// Report immediately for high-value opportunities
 		if opp.SpreadBps >= 100 || time.Since(lastReport) >= reportInterval {
 			rep.ReportOpportunities(opportunities)
@@ -117,6 +137,11 @@ func main() {
 	// Chain arbitrage callback
 	aggregator.OnChainArbitrage(func(opp *types.ChainArbitrageOpportunity) {
 		chainOpportunities = append(chainOpportunities, opp)
+
+		// Notify Slack about chain opportunity
+		if err := slackNotifier.NotifyChainArbitrageOpportunity(opp); err != nil {
+			fmt.Printf("  [SLACK ERROR] %v\n", err)
+		}
 
 		// Report immediately for high-value opportunities or after interval
 		if opp.SpreadBps >= 100 || time.Since(lastChainReport) >= reportInterval {

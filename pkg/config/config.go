@@ -30,6 +30,16 @@ type Config struct {
 
 	// Pair settings
 	Pairs []PairSettings `json:"pairs"`
+
+	// Slack notification settings
+	Slack SlackSettings `json:"slack"`
+}
+
+// SlackSettings holds Slack notification configuration.
+type SlackSettings struct {
+	Enabled  bool   `json:"enabled"`
+	APIToken string `json:"api_token,omitempty"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 // ArbitrageSettings holds arbitrage-specific configuration.
@@ -179,6 +189,17 @@ func (c *Config) applyEnvOverrides() {
 		if val, err := parseFloat(v); err == nil {
 			c.Arbitrage.DefaultTradeSize = val
 		}
+	}
+
+	// Slack settings
+	if v := os.Getenv("SLACK_ENABLED"); v != "" {
+		c.Slack.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("SLACK_API_TOKEN"); v != "" {
+		c.Slack.APIToken = v
+	}
+	if v := os.Getenv("SLACK_CHANNEL"); v != "" {
+		c.Slack.Channel = v
 	}
 
 	// Exchange API keys from environment

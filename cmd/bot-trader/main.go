@@ -14,6 +14,7 @@ import (
 
 	"github.com/jonasrmichel/gswap-arb/pkg/config"
 	"github.com/jonasrmichel/gswap-arb/pkg/executor"
+	"github.com/jonasrmichel/gswap-arb/pkg/notifier"
 	"github.com/jonasrmichel/gswap-arb/pkg/providers/websocket"
 	"github.com/jonasrmichel/gswap-arb/pkg/reporter"
 	"github.com/jonasrmichel/gswap-arb/pkg/types"
@@ -113,9 +114,28 @@ func main() {
 	// Print configuration summary
 	printConfig(cfg, coordinator)
 
+	// Create Slack notifier
+	slackNotifier := notifier.NewSlackNotifier(&notifier.SlackConfig{
+		APIToken: cfg.Slack.APIToken,
+		Channel:  cfg.Slack.Channel,
+		Enabled:  cfg.Slack.Enabled,
+	})
+
+	if slackNotifier.IsEnabled() {
+		fmt.Println("Slack notifications enabled")
+		if err := slackNotifier.SendTestMessage(); err != nil {
+			fmt.Printf("Warning: Failed to send Slack test message: %v\n", err)
+		}
+	}
+
 	// Set up arbitrage callback with execution
 	aggregator.OnArbitrage(func(opp *types.ArbitrageOpportunity) {
 		rep.ReportOpportunities([]*types.ArbitrageOpportunity{opp})
+
+		// Notify Slack about opportunity
+		if err := slackNotifier.NotifyArbitrageOpportunity(opp); err != nil {
+			fmt.Printf("  [SLACK ERROR] %v\n", err)
+		}
 
 		// Attempt execution if conditions are met
 		if opp.NetProfitBps >= *minProfit {
@@ -123,6 +143,24 @@ func main() {
 			if err != nil {
 				fmt.Printf("  [EXEC ERROR] %v\n", err)
 				return
+			}
+
+			// Notify Slack about trade execution
+			tradeNotif := &notifier.TradeExecution{
+				Pair:         opp.Pair,
+				BuyExchange:  opp.BuyExchange,
+				SellExchange: opp.SellExchange,
+				BuyPrice:     opp.BuyPrice.Text('f', 8),
+				SellPrice:    opp.SellPrice.Text('f', 8),
+				Amount:       opp.TradeSize.Text('f', 4),
+				Profit:       execution.NetProfit.Text('f', 4),
+				Fees:         execution.TotalFees.Text('f', 4),
+				Success:      execution.Success,
+				DryRun:       execution.DryRun,
+				Error:        execution.Error,
+			}
+			if err := slackNotifier.NotifyTradeExecution(tradeNotif); err != nil {
+				fmt.Printf("  [SLACK ERROR] %v\n", err)
 			}
 
 			if execution.DryRun {
@@ -142,6 +180,11 @@ func main() {
 	// Chain arbitrage callback
 	aggregator.OnChainArbitrage(func(opp *types.ChainArbitrageOpportunity) {
 		rep.ReportChainOpportunities([]*types.ChainArbitrageOpportunity{opp})
+
+		// Notify Slack about chain opportunity
+		if err := slackNotifier.NotifyChainArbitrageOpportunity(opp); err != nil {
+			fmt.Printf("  [SLACK ERROR] %v\n", err)
+		}
 
 		if opp.NetProfitBps >= *minProfit {
 			execution, err := coordinator.ExecuteChainOpportunity(ctx, opp)
