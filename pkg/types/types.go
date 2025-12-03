@@ -147,11 +147,77 @@ type FeeStructure struct {
 
 // BotStats holds runtime statistics.
 type BotStats struct {
-	StartTime            time.Time `json:"start_time"`
-	TotalCycles          int64     `json:"total_cycles"`
-	OpportunitiesFound   int64     `json:"opportunities_found"`
-	ProfitableOpportunities int64  `json:"profitable_opportunities"`
-	LastCycleTime        time.Time `json:"last_cycle_time"`
-	LastCycleDurationMs  int64     `json:"last_cycle_duration_ms"`
-	Errors               int64     `json:"errors"`
+	StartTime               time.Time `json:"start_time"`
+	TotalCycles             int64     `json:"total_cycles"`
+	OpportunitiesFound      int64     `json:"opportunities_found"`
+	ProfitableOpportunities int64     `json:"profitable_opportunities"`
+	ChainOpportunitiesFound int64     `json:"chain_opportunities_found"`
+	LastCycleTime           time.Time `json:"last_cycle_time"`
+	LastCycleDurationMs     int64     `json:"last_cycle_duration_ms"`
+	Errors                  int64     `json:"errors"`
+}
+
+// ChainHop represents a single hop in a chain arbitrage path.
+type ChainHop struct {
+	Exchange  string     `json:"exchange"`
+	Action    string     `json:"action"` // "buy" or "sell"
+	Pair      string     `json:"pair"`
+	Price     *big.Float `json:"price"`
+	Size      *big.Float `json:"size,omitempty"`
+	FeeBps    int        `json:"fee_bps"`
+	Timestamp time.Time  `json:"timestamp"`
+}
+
+// ChainArbitrageOpportunity represents a multi-hop arbitrage opportunity.
+type ChainArbitrageOpportunity struct {
+	ID   string `json:"id"`
+	Pair string `json:"pair"` // The trading pair being arbitraged
+
+	// Chain of exchanges: e.g., ["binance", "gswap", "coinbase"]
+	Chain []string `json:"chain"`
+
+	// Individual hops in the chain
+	Hops []ChainHop `json:"hops"`
+
+	// Starting and ending state
+	StartExchange string     `json:"start_exchange"`
+	EndExchange   string     `json:"end_exchange"`
+	StartAmount   *big.Float `json:"start_amount"` // Initial capital
+	EndAmount     *big.Float `json:"end_amount"`   // Final amount after all hops
+
+	// Profit metrics
+	GrossProfit    *big.Float `json:"gross_profit"`     // EndAmount - StartAmount (before fees)
+	TotalFees      *big.Float `json:"total_fees"`       // Sum of all fees across hops
+	NetProfit      *big.Float `json:"net_profit"`       // EndAmount - StartAmount - TotalFees
+	NetProfitBps   int        `json:"net_profit_bps"`   // Net profit in basis points
+	SpreadPercent  float64    `json:"spread_percent"`   // Total spread as percentage
+	SpreadBps      int        `json:"spread_bps"`       // Total spread in basis points
+
+	// Chain length
+	HopCount int `json:"hop_count"` // Number of exchanges in the chain
+
+	// Timestamps
+	DetectedAt time.Time `json:"detected_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+
+	// Validity
+	IsValid             bool     `json:"is_valid"`
+	InvalidationReasons []string `json:"invalidation_reasons,omitempty"`
+}
+
+// ChainPath represents a path through exchanges for arbitrage calculation.
+type ChainPath struct {
+	Exchanges []string // Ordered list of exchanges in the path
+}
+
+// String returns a string representation of the chain path.
+func (p ChainPath) String() string {
+	result := ""
+	for i, ex := range p.Exchanges {
+		if i > 0 {
+			result += " -> "
+		}
+		result += ex
+	}
+	return result
 }

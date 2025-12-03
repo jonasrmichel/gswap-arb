@@ -96,9 +96,11 @@ func main() {
 		})
 	}
 
-	// Opportunity counter for batching reports
+	// Opportunity counters for batching reports
 	var opportunities []*types.ArbitrageOpportunity
+	var chainOpportunities []*types.ChainArbitrageOpportunity
 	var lastReport time.Time
+	var lastChainReport time.Time
 	reportInterval := 5 * time.Second
 
 	aggregator.OnArbitrage(func(opp *types.ArbitrageOpportunity) {
@@ -109,6 +111,18 @@ func main() {
 			rep.ReportOpportunities(opportunities)
 			opportunities = nil
 			lastReport = time.Now()
+		}
+	})
+
+	// Chain arbitrage callback
+	aggregator.OnChainArbitrage(func(opp *types.ChainArbitrageOpportunity) {
+		chainOpportunities = append(chainOpportunities, opp)
+
+		// Report immediately for high-value opportunities or after interval
+		if opp.SpreadBps >= 100 || time.Since(lastChainReport) >= reportInterval {
+			rep.ReportChainOpportunities(chainOpportunities)
+			chainOpportunities = nil
+			lastChainReport = time.Now()
 		}
 	})
 
@@ -162,6 +176,9 @@ func main() {
 			// Report any remaining opportunities
 			if len(opportunities) > 0 {
 				rep.ReportOpportunities(opportunities)
+			}
+			if len(chainOpportunities) > 0 {
+				rep.ReportChainOpportunities(chainOpportunities)
 			}
 
 			// Print final stats

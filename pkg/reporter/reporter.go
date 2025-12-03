@@ -15,14 +15,15 @@ import (
 
 // Reporter outputs arbitrage opportunities in various formats.
 type Reporter struct {
-	output      io.Writer
-	format      OutputFormat
-	verbose     bool
-	stats       *types.BotStats
-	statsMu     sync.Mutex
-	history     []*types.ArbitrageOpportunity
-	historyMu   sync.Mutex
-	maxHistory  int
+	output       io.Writer
+	format       OutputFormat
+	verbose      bool
+	stats        *types.BotStats
+	statsMu      sync.Mutex
+	history      []*types.ArbitrageOpportunity
+	chainHistory []*types.ChainArbitrageOpportunity
+	historyMu    sync.Mutex
+	maxHistory   int
 }
 
 // OutputFormat specifies the output format for reports.
@@ -40,12 +41,13 @@ func NewReporter(output io.Writer, format OutputFormat, verbose bool) *Reporter 
 		output = os.Stdout
 	}
 	return &Reporter{
-		output:     output,
-		format:     format,
-		verbose:    verbose,
-		stats:      &types.BotStats{StartTime: time.Now()},
-		history:    make([]*types.ArbitrageOpportunity, 0),
-		maxHistory: 1000,
+		output:       output,
+		format:       format,
+		verbose:      verbose,
+		stats:        &types.BotStats{StartTime: time.Now()},
+		history:      make([]*types.ArbitrageOpportunity, 0),
+		chainHistory: make([]*types.ChainArbitrageOpportunity, 0),
+		maxHistory:   1000,
 	}
 }
 
@@ -208,6 +210,215 @@ func (r *Reporter) printNoOpportunities() {
 	fmt.Fprintf(r.output, "[%s] No arbitrage opportunities found\n", time.Now().Format("15:04:05"))
 }
 
+// ReportChainOpportunities reports detected chain arbitrage opportunities.
+func (r *Reporter) ReportChainOpportunities(opportunities []*types.ChainArbitrageOpportunity) {
+	r.updateChainStats(opportunities)
+
+	if len(opportunities) == 0 {
+		return
+	}
+
+	// Add to history
+	r.historyMu.Lock()
+	for _, opp := range opportunities {
+		if opp.IsValid {
+			r.chainHistory = append(r.chainHistory, opp)
+			if len(r.chainHistory) > r.maxHistory {
+				r.chainHistory = r.chainHistory[1:]
+			}
+		}
+	}
+	r.historyMu.Unlock()
+
+	switch r.format {
+	case FormatJSON:
+		r.reportChainJSON(opportunities)
+	case FormatCSV:
+		r.reportChainCSV(opportunities)
+	default:
+		r.reportChainText(opportunities)
+	}
+}
+
+// ReportChainOpportunity reports a single chain arbitrage opportunity.
+func (r *Reporter) ReportChainOpportunity(opp *types.ChainArbitrageOpportunity) {
+	r.ReportChainOpportunities([]*types.ChainArbitrageOpportunity{opp})
+}
+
+// reportChainText outputs chain opportunities in human-readable text format.
+func (r *Reporter) reportChainText(opportunities []*types.ChainArbitrageOpportunity) {
+	fmt.Fprintln(r.output)
+	fmt.Fprintln(r.output, strings.Repeat("=", 80))
+	fmt.Fprintf(r.output, "CHAIN ARBITRAGE OPPORTUNITIES DETECTED: %d\n", len(opportunities))
+	fmt.Fprintf(r.output, "Time: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintln(r.output, strings.Repeat("=", 80))
+
+	for i, opp := range opportunities {
+		if !opp.IsValid {
+			continue
+		}
+
+		fmt.Fprintln(r.output)
+		fmt.Fprintf(r.output, "--- Chain Opportunity #%d ---\n", i+1)
+		fmt.Fprintf(r.output, "Pair:         %s\n", opp.Pair)
+		fmt.Fprintf(r.output, "Chain:        %s\n", strings.Join(opp.Chain, " -> "))
+		fmt.Fprintf(r.output, "Hops:         %d\n", opp.HopCount)
+		fmt.Fprintln(r.output)
+
+		// Display each hop
+		for j, hop := range opp.Hops {
+			fmt.Fprintf(r.output, "  Step %d: %s on %s @ %s\n",
+				j+1, strings.ToUpper(hop.Action), hop.Exchange, formatPrice(hop.Price))
+		}
+
+		fmt.Fprintln(r.output)
+		fmt.Fprintf(r.output, "Start Amount: %s\n", formatPrice(opp.StartAmount))
+		fmt.Fprintf(r.output, "End Amount:   %s\n", formatPrice(opp.EndAmount))
+		fmt.Fprintf(r.output, "Spread:       %.2f%% (%d bps)\n", opp.SpreadPercent, opp.SpreadBps)
+		fmt.Fprintf(r.output, "Total Fees:   %s\n", formatPrice(opp.TotalFees))
+		fmt.Fprintf(r.output, "Net Profit:   %s (%d bps)\n", formatPrice(opp.NetProfit), opp.NetProfitBps)
+		fmt.Fprintf(r.output, "Valid Until:  %s\n", opp.ExpiresAt.Format(time.RFC3339))
+
+		if r.verbose && len(opp.InvalidationReasons) > 0 {
+			fmt.Fprintf(r.output, "Warnings:     %s\n", strings.Join(opp.InvalidationReasons, "; "))
+		}
+	}
+
+	fmt.Fprintln(r.output)
+	fmt.Fprintln(r.output, strings.Repeat("-", 80))
+}
+
+// chainOpportunityJSON is a JSON-friendly representation of a chain opportunity.
+type chainOpportunityJSON struct {
+	ID            string   `json:"id"`
+	Pair          string   `json:"pair"`
+	Chain         []string `json:"chain"`
+	HopCount      int      `json:"hop_count"`
+	StartExchange string   `json:"start_exchange"`
+	EndExchange   string   `json:"end_exchange"`
+	StartAmount   string   `json:"start_amount"`
+	EndAmount     string   `json:"end_amount"`
+	SpreadPercent float64  `json:"spread_percent"`
+	SpreadBps     int      `json:"spread_bps"`
+	TotalFees     string   `json:"total_fees"`
+	NetProfit     string   `json:"net_profit"`
+	NetProfitBps  int      `json:"net_profit_bps"`
+	DetectedAt    string   `json:"detected_at"`
+	ExpiresAt     string   `json:"expires_at"`
+	Hops          []hopJSON `json:"hops"`
+}
+
+type hopJSON struct {
+	Exchange string `json:"exchange"`
+	Action   string `json:"action"`
+	Price    string `json:"price"`
+	FeeBps   int    `json:"fee_bps"`
+}
+
+func toChainOpportunityJSON(opp *types.ChainArbitrageOpportunity) *chainOpportunityJSON {
+	hops := make([]hopJSON, len(opp.Hops))
+	for i, hop := range opp.Hops {
+		hops[i] = hopJSON{
+			Exchange: hop.Exchange,
+			Action:   hop.Action,
+			Price:    formatPrice(hop.Price),
+			FeeBps:   hop.FeeBps,
+		}
+	}
+
+	return &chainOpportunityJSON{
+		ID:            opp.ID,
+		Pair:          opp.Pair,
+		Chain:         opp.Chain,
+		HopCount:      opp.HopCount,
+		StartExchange: opp.StartExchange,
+		EndExchange:   opp.EndExchange,
+		StartAmount:   formatPrice(opp.StartAmount),
+		EndAmount:     formatPrice(opp.EndAmount),
+		SpreadPercent: opp.SpreadPercent,
+		SpreadBps:     opp.SpreadBps,
+		TotalFees:     formatPrice(opp.TotalFees),
+		NetProfit:     formatPrice(opp.NetProfit),
+		NetProfitBps:  opp.NetProfitBps,
+		DetectedAt:    opp.DetectedAt.Format(time.RFC3339),
+		ExpiresAt:     opp.ExpiresAt.Format(time.RFC3339),
+		Hops:          hops,
+	}
+}
+
+// reportChainJSON outputs chain opportunities in JSON format.
+func (r *Reporter) reportChainJSON(opportunities []*types.ChainArbitrageOpportunity) {
+	valid := make([]*chainOpportunityJSON, 0)
+	for _, opp := range opportunities {
+		if opp.IsValid {
+			valid = append(valid, toChainOpportunityJSON(opp))
+		}
+	}
+
+	report := struct {
+		Timestamp     string                  `json:"timestamp"`
+		Type          string                  `json:"type"`
+		Count         int                     `json:"count"`
+		Opportunities []*chainOpportunityJSON `json:"opportunities"`
+	}{
+		Timestamp:     time.Now().Format(time.RFC3339),
+		Type:          "chain_arbitrage",
+		Count:         len(valid),
+		Opportunities: valid,
+	}
+
+	encoder := json.NewEncoder(r.output)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(report)
+}
+
+// reportChainCSV outputs chain opportunities in CSV format.
+func (r *Reporter) reportChainCSV(opportunities []*types.ChainArbitrageOpportunity) {
+	// Header
+	fmt.Fprintln(r.output, "timestamp,pair,chain,hop_count,start_exchange,end_exchange,start_amount,end_amount,spread_bps,net_profit_bps,net_profit")
+
+	for _, opp := range opportunities {
+		if !opp.IsValid {
+			continue
+		}
+		fmt.Fprintf(r.output, "%s,%s,%s,%d,%s,%s,%s,%s,%d,%d,%s\n",
+			opp.DetectedAt.Format(time.RFC3339),
+			opp.Pair,
+			strings.Join(opp.Chain, "->"),
+			opp.HopCount,
+			opp.StartExchange,
+			opp.EndExchange,
+			formatPrice(opp.StartAmount),
+			formatPrice(opp.EndAmount),
+			opp.SpreadBps,
+			opp.NetProfitBps,
+			formatPrice(opp.NetProfit),
+		)
+	}
+}
+
+// updateChainStats updates bot statistics for chain opportunities.
+func (r *Reporter) updateChainStats(opportunities []*types.ChainArbitrageOpportunity) {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+
+	for _, opp := range opportunities {
+		if opp.IsValid && opp.NetProfitBps > 0 {
+			r.stats.ChainOpportunitiesFound++
+		}
+	}
+}
+
+// GetChainHistory returns historical chain opportunities.
+func (r *Reporter) GetChainHistory() []*types.ChainArbitrageOpportunity {
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+
+	result := make([]*types.ChainArbitrageOpportunity, len(r.chainHistory))
+	copy(result, r.chainHistory)
+	return result
+}
+
 // updateStats updates bot statistics.
 func (r *Reporter) updateStats(opportunities []*types.ArbitrageOpportunity) {
 	r.statsMu.Lock()
@@ -242,7 +453,8 @@ func (r *Reporter) PrintStats() {
 	fmt.Fprintf(r.output, "Running since:              %s\n", stats.StartTime.Format(time.RFC3339))
 	fmt.Fprintf(r.output, "Uptime:                     %s\n", time.Since(stats.StartTime).Round(time.Second))
 	fmt.Fprintf(r.output, "Total scan cycles:          %d\n", stats.TotalCycles)
-	fmt.Fprintf(r.output, "Opportunities found:        %d\n", stats.OpportunitiesFound)
+	fmt.Fprintf(r.output, "Direct opportunities:       %d\n", stats.OpportunitiesFound)
+	fmt.Fprintf(r.output, "Chain opportunities:        %d\n", stats.ChainOpportunitiesFound)
 	fmt.Fprintf(r.output, "Profitable opportunities:   %d\n", stats.ProfitableOpportunities)
 	fmt.Fprintf(r.output, "Errors:                     %d\n", stats.Errors)
 	fmt.Fprintln(r.output, strings.Repeat("-", 50))

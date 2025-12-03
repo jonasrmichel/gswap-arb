@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jonasrmichel/gswap-arb/pkg/arbitrage"
 	"github.com/jonasrmichel/gswap-arb/pkg/types"
 )
 
@@ -23,11 +24,17 @@ type PriceAggregator struct {
 	// Callbacks
 	onPriceUpdate     func(update *PriceUpdate)
 	onArbitrage       func(opp *types.ArbitrageOpportunity)
+	onChainArbitrage  func(opp *types.ChainArbitrageOpportunity)
 
 	// Configuration
 	minSpreadBps    int
 	minNetProfitBps int
 	staleThreshold  time.Duration
+	defaultTradeSize *big.Float
+	maxChainHops    int
+
+	// Chain arbitrage detector
+	chainDetector *arbitrage.ChainArbitrageDetector
 
 	// Channels
 	updates chan *PriceUpdate
@@ -39,17 +46,21 @@ type PriceAggregator struct {
 
 // AggregatorConfig holds configuration for the price aggregator.
 type AggregatorConfig struct {
-	MinSpreadBps    int           // Minimum spread to trigger callback
-	MinNetProfitBps int           // Minimum net profit after fees
-	StaleThreshold  time.Duration // How long before a price is considered stale
+	MinSpreadBps     int           // Minimum spread to trigger callback
+	MinNetProfitBps  int           // Minimum net profit after fees
+	StaleThreshold   time.Duration // How long before a price is considered stale
+	DefaultTradeSize float64       // Default trade size for calculations
+	MaxChainHops     int           // Maximum hops in chain arbitrage (default: 3)
 }
 
 // DefaultAggregatorConfig returns default configuration.
 func DefaultAggregatorConfig() *AggregatorConfig {
 	return &AggregatorConfig{
-		MinSpreadBps:    50,
-		MinNetProfitBps: 20,
-		StaleThreshold:  10 * time.Second,
+		MinSpreadBps:     50,
+		MinNetProfitBps:  20,
+		StaleThreshold:   10 * time.Second,
+		DefaultTradeSize: 1000.0,
+		MaxChainHops:     3,
 	}
 }
 
@@ -59,14 +70,31 @@ func NewPriceAggregator(config *AggregatorConfig) *PriceAggregator {
 		config = DefaultAggregatorConfig()
 	}
 
+	if config.MaxChainHops <= 0 {
+		config.MaxChainHops = 3
+	}
+
+	if config.DefaultTradeSize <= 0 {
+		config.DefaultTradeSize = 1000.0
+	}
+
+	// Create arbitrage config for chain detector
+	arbConfig := &types.ArbitrageConfig{
+		MinSpreadBps:    config.MinSpreadBps,
+		MinNetProfitBps: config.MinNetProfitBps,
+	}
+
 	return &PriceAggregator{
-		providers:       make(map[string]WSProvider),
-		prices:          make(map[string]map[string]*PriceUpdate),
-		minSpreadBps:    config.MinSpreadBps,
-		minNetProfitBps: config.MinNetProfitBps,
-		staleThreshold:  config.StaleThreshold,
-		updates:         make(chan *PriceUpdate, 10000),
-		done:            make(chan struct{}),
+		providers:        make(map[string]WSProvider),
+		prices:           make(map[string]map[string]*PriceUpdate),
+		minSpreadBps:     config.MinSpreadBps,
+		minNetProfitBps:  config.MinNetProfitBps,
+		staleThreshold:   config.StaleThreshold,
+		defaultTradeSize: big.NewFloat(config.DefaultTradeSize),
+		maxChainHops:     config.MaxChainHops,
+		chainDetector:    arbitrage.NewChainArbitrageDetector(arbConfig, config.MaxChainHops),
+		updates:          make(chan *PriceUpdate, 10000),
+		done:             make(chan struct{}),
 	}
 }
 
@@ -100,6 +128,11 @@ func (a *PriceAggregator) OnPriceUpdate(callback func(update *PriceUpdate)) {
 // OnArbitrage sets the callback for detected arbitrage opportunities.
 func (a *PriceAggregator) OnArbitrage(callback func(opp *types.ArbitrageOpportunity)) {
 	a.onArbitrage = callback
+}
+
+// OnChainArbitrage sets the callback for detected chain arbitrage opportunities.
+func (a *PriceAggregator) OnChainArbitrage(callback func(opp *types.ChainArbitrageOpportunity)) {
+	a.onChainArbitrage = callback
 }
 
 // Start starts the aggregator and connects all providers.
@@ -227,10 +260,6 @@ func (a *PriceAggregator) handleUpdate(update *PriceUpdate) {
 
 // checkArbitrage checks for arbitrage opportunities on a pair.
 func (a *PriceAggregator) checkArbitrage(pair string) {
-	if a.onArbitrage == nil {
-		return
-	}
-
 	a.pricesMu.RLock()
 	pairPrices := a.prices[pair]
 	if len(pairPrices) < 2 {
@@ -245,6 +274,19 @@ func (a *PriceAggregator) checkArbitrage(pair string) {
 	}
 	a.pricesMu.RUnlock()
 
+	// Check simple (direct) arbitrage if callback is set
+	if a.onArbitrage != nil {
+		a.checkDirectArbitrage(pair, prices)
+	}
+
+	// Check chain arbitrage if callback is set
+	if a.onChainArbitrage != nil {
+		a.checkChainArbitrage(pair, prices)
+	}
+}
+
+// checkDirectArbitrage checks for simple 2-exchange arbitrage opportunities.
+func (a *PriceAggregator) checkDirectArbitrage(pair string, prices map[string]*PriceUpdate) {
 	// Find best bid and best ask across exchanges
 	var bestBidExchange, bestAskExchange string
 	var bestBid, bestAsk *PriceUpdate
@@ -326,6 +368,45 @@ func (a *PriceAggregator) checkArbitrage(pair string) {
 	}
 
 	a.onArbitrage(opp)
+}
+
+// checkChainArbitrage checks for multi-hop chain arbitrage opportunities.
+func (a *PriceAggregator) checkChainArbitrage(pair string, prices map[string]*PriceUpdate) {
+	// Convert PriceUpdate map to ExchangePrice map for the chain detector
+	exchangePrices := make(map[string]*arbitrage.ExchangePrice)
+
+	a.providersMu.RLock()
+	for exchange, update := range prices {
+		// Skip stale prices
+		if time.Since(update.Timestamp) > a.staleThreshold {
+			continue
+		}
+
+		if update.BidPrice == nil || update.AskPrice == nil {
+			continue
+		}
+
+		exchangePrices[exchange] = &arbitrage.ExchangePrice{
+			Exchange:  exchange,
+			BidPrice:  update.BidPrice,
+			AskPrice:  update.AskPrice,
+			BidSize:   update.BidSize,
+			AskSize:   update.AskSize,
+			FeeBps:    a.getProviderFees(exchange),
+			Timestamp: update.Timestamp,
+		}
+	}
+	a.providersMu.RUnlock()
+
+	// Detect chain opportunities
+	opportunities := a.chainDetector.DetectChainOpportunities(pair, exchangePrices, a.defaultTradeSize)
+
+	// Emit all valid opportunities
+	for _, opp := range opportunities {
+		if opp.IsValid {
+			a.onChainArbitrage(opp)
+		}
+	}
 }
 
 // getProviderFees gets the taker fee in basis points for a provider.
