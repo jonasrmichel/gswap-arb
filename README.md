@@ -47,8 +47,9 @@ gswap-arb/
 │   │   └── config.go         # Configuration management
 │   ├── executor/
 │   │   ├── types.go          # TradeExecutor interface & types
-│   │   ├── binance.go        # Binance trade executor
+│   │   ├── ccxt_executor.go  # Unified CEX executor via CCXT
 │   │   ├── gswap.go          # GSwap DEX executor
+│   │   ├── registry.go       # Executor registry
 │   │   └── coordinator.go    # Arbitrage execution coordinator
 │   ├── providers/
 │   │   ├── provider.go       # Provider interface & registry
@@ -443,7 +444,18 @@ go build -o gswap-trader ./cmd/bot-trader
 | Exchange | Type | Features |
 |----------|------|----------|
 | **GSwap** | DEX | Swap execution via GalaChain API, balance checking |
-| **Binance** | CEX | Market/limit orders, HMAC authentication, US fallback |
+| **Binance** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Kraken** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Coinbase** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **OKX** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Bybit** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **KuCoin** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Gate** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Huobi** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Bitfinex** | CEX | Via CCXT - Market/limit orders, balance checking |
+| **Bitstamp** | CEX | Via CCXT - Market/limit orders, balance checking |
+
+All CEX integrations use [CCXT](https://github.com/ccxt/ccxt) for unified exchange access.
 
 ### Trade Execution Flow
 
@@ -473,12 +485,12 @@ BINANCE_MAX_TRADE_SIZE=100
 
 - [x] Trade execution (move beyond detection)
 - [x] Multi-hop chain arbitrage detection
+- [x] CCXT integration for unified CEX support (10+ exchanges)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades
 - [ ] GSwap WebSocket support (when available from GalaChain)
 - [ ] Additional GalaChain token pairs
-- [ ] More CEX executors (Coinbase, Kraken, etc.)
 
 ## License
 

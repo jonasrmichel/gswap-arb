@@ -258,22 +258,8 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 			continue
 		}
 
-		switch ex.ID {
-		case "binance":
-			if ex.APIKey == "" || ex.Secret == "" {
-				fmt.Printf("Skipping Binance executor: API credentials not configured\n")
-				continue
-			}
-			binanceExec := executor.NewBinanceExecutor(ex.APIKey, ex.Secret, false)
-			if err := binanceExec.Initialize(ctx); err != nil {
-				fmt.Printf("Warning: Failed to initialize Binance executor: %v\n", err)
-				lastErr = err
-				continue
-			}
-			registry.Register(binanceExec)
-			fmt.Printf("Initialized Binance executor\n")
-
-		case "gswap":
+		// GSwap is a DEX on GalaChain - use native executor
+		if ex.ID == "gswap" {
 			if ex.PrivateKey == "" {
 				fmt.Printf("Skipping GSwap executor: Private key not configured\n")
 				continue
@@ -291,6 +277,39 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 			}
 			registry.Register(gswapExec)
 			fmt.Printf("Initialized GSwap executor (wallet: %s)\n", gswapExec.GetWalletAddress())
+			continue
+		}
+
+		// Use CCXT for all supported CEX exchanges
+		if executor.SupportedCCXTExchanges[strings.ToLower(ex.ID)] {
+			if ex.APIKey == "" || ex.Secret == "" {
+				fmt.Printf("Skipping %s executor: API credentials not configured\n", ex.ID)
+				continue
+			}
+
+			ccxtConfig := &executor.CCXTConfig{
+				ExchangeID: ex.ID,
+				APIKey:     ex.APIKey,
+				Secret:     ex.Secret,
+				Password:   ex.Passphrase, // For exchanges requiring passphrase
+				Sandbox:    false,
+			}
+
+			ccxtExec, err := executor.NewCCXTExecutor(ccxtConfig)
+			if err != nil {
+				fmt.Printf("Warning: Failed to create %s executor: %v\n", ex.ID, err)
+				lastErr = err
+				continue
+			}
+			if err := ccxtExec.Initialize(ctx); err != nil {
+				fmt.Printf("Warning: Failed to initialize %s executor: %v\n", ex.ID, err)
+				lastErr = err
+				continue
+			}
+			registry.Register(ccxtExec)
+			fmt.Printf("Initialized %s executor (via CCXT)\n", ex.ID)
+		} else {
+			fmt.Printf("Skipping %s: not a supported CCXT exchange\n", ex.ID)
 		}
 	}
 
