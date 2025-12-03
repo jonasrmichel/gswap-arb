@@ -48,8 +48,19 @@ type ExchangeSettings struct {
 	Type     string `json:"type"` // "dex" or "cex"
 	Enabled  bool   `json:"enabled"`
 	BaseURL  string `json:"base_url,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
-	Secret   string `json:"secret,omitempty"`
+
+	// API credentials for CEXs
+	APIKey     string `json:"api_key,omitempty"`
+	Secret     string `json:"secret,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"` // Required for some exchanges like Coinbase
+
+	// Wallet credentials for DEXs (GSwap)
+	PrivateKey    string `json:"private_key,omitempty"`    // Ethereum-style private key
+	WalletAddress string `json:"wallet_address,omitempty"` // Derived or explicit wallet address
+
+	// Trading settings per exchange
+	TradingEnabled bool    `json:"trading_enabled"` // Allow actual trades (not just detection)
+	MaxTradeSize   float64 `json:"max_trade_size,omitempty"` // Max single trade size
 }
 
 // TokenSettings holds configuration for a token.
@@ -178,6 +189,23 @@ func (c *Config) applyEnvOverrides() {
 		}
 		if secret := os.Getenv(envPrefix + "_SECRET"); secret != "" {
 			c.Exchanges[i].Secret = secret
+		}
+		if passphrase := os.Getenv(envPrefix + "_PASSPHRASE"); passphrase != "" {
+			c.Exchanges[i].Passphrase = passphrase
+		}
+		if privateKey := os.Getenv(envPrefix + "_PRIVATE_KEY"); privateKey != "" {
+			c.Exchanges[i].PrivateKey = privateKey
+		}
+		if walletAddr := os.Getenv(envPrefix + "_WALLET_ADDRESS"); walletAddr != "" {
+			c.Exchanges[i].WalletAddress = walletAddr
+		}
+		if tradingEnabled := os.Getenv(envPrefix + "_TRADING_ENABLED"); tradingEnabled != "" {
+			c.Exchanges[i].TradingEnabled = strings.ToLower(tradingEnabled) == "true"
+		}
+		if maxTradeSize := os.Getenv(envPrefix + "_MAX_TRADE_SIZE"); maxTradeSize != "" {
+			if val, err := parseFloat(maxTradeSize); err == nil {
+				c.Exchanges[i].MaxTradeSize = val
+			}
 		}
 	}
 }

@@ -5,7 +5,7 @@
 <h1 align="center">GSwap Arbitrage Bot</h1>
 
 <p align="center">
-  A Golang-based cryptocurrency arbitrage detection bot that monitors price discrepancies between GalaChain/GSwap (DEX) and major centralized exchanges (CEXs).
+  A Golang-based cryptocurrency arbitrage bot that detects and executes trades on price discrepancies between GalaChain/GSwap (DEX) and major centralized exchanges (CEXs).
 </p>
 
 ## Features
@@ -17,16 +17,16 @@
   - Kraken
   - OKX
   - Bybit
-  - KuCoin
-  - Gate.io
 
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
+- **Trade execution**: Execute arbitrage trades on GSwap and Binance (with safety limits)
+- **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
 - **WebSocket support**: Real-time price feeds for ultra-low latency detection
 - **GSwap DEX integration**: Polls GalaChain composite pool API for DEX prices
 - **Configurable thresholds**: Set minimum spread, profit margins, and trade sizes
 - **Multiple output formats**: Text, JSON, or CSV
-- **Dry-run mode**: Detect opportunities without executing trades
-- **Rate-limit aware**: Respects exchange API rate limits
+- **Dry-run mode**: Detect opportunities without executing trades (default)
+- **Safety features**: Balance checking, rate limiting, configurable trade limits
 
 ## Project Structure
 
@@ -35,13 +35,21 @@ gswap-arb/
 ├── cmd/
 │   ├── bot/
 │   │   └── main.go           # REST API-based bot (polling)
-│   └── bot-ws/
-│       └── main.go           # WebSocket-based bot (real-time)
+│   ├── bot-ws/
+│   │   └── main.go           # WebSocket-based bot (real-time)
+│   └── bot-trader/
+│       └── main.go           # Trading bot with execution
 ├── pkg/
 │   ├── arbitrage/
-│   │   └── detector.go       # Arbitrage detection logic
+│   │   ├── detector.go       # Arbitrage detection logic
+│   │   └── chain.go          # Multi-hop chain arbitrage
 │   ├── config/
 │   │   └── config.go         # Configuration management
+│   ├── executor/
+│   │   ├── types.go          # TradeExecutor interface & types
+│   │   ├── binance.go        # Binance trade executor
+│   │   ├── gswap.go          # GSwap DEX executor
+│   │   └── coordinator.go    # Arbitrage execution coordinator
 │   ├── providers/
 │   │   ├── provider.go       # Provider interface & registry
 │   │   ├── gswap/
@@ -61,6 +69,7 @@ gswap-arb/
 │   │   └── reporter.go       # Output formatting & reporting
 │   └── types/
 │       └── types.go          # Core data structures
+├── .env.example              # Example environment configuration
 ├── config.example.json       # Example configuration
 ├── go.mod
 └── README.md
@@ -370,15 +379,106 @@ aggregator.Start(ctx, []string{"BTC/USDT", "ETH/USDT"})
 - **Stale Detection**: Automatically discards prices older than threshold
 - **Parallel Processing**: Non-blocking price update handling
 
+## Trade Execution
+
+The bot now supports actual trade execution on supported exchanges. **Use with caution!**
+
+### Setup
+
+1. Copy `.env.example` to `.env` and configure your credentials:
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys and private keys
+```
+
+2. Enable trading for specific exchanges:
+
+```bash
+# In .env:
+BINANCE_API_KEY=your_key
+BINANCE_SECRET=your_secret
+BINANCE_TRADING_ENABLED=true
+BINANCE_MAX_TRADE_SIZE=100
+
+GSWAP_PRIVATE_KEY=your_private_key
+GSWAP_TRADING_ENABLED=true
+GSWAP_MAX_TRADE_SIZE=100
+```
+
+### Running the Trading Bot
+
+```bash
+# Build the trading bot
+go build -o gswap-trader ./cmd/bot-trader
+
+# Run in dry-run mode (recommended for testing)
+./gswap-trader --dry-run=true --max-trade=10
+
+# Run with real trading (BE CAREFUL!)
+./gswap-trader --dry-run=false --max-trade=10 --min-profit=50
+```
+
+### Trading Bot Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | - | Path to JSON configuration file |
+| `--dry-run` | `true` | Dry run mode (no real trades) |
+| `--max-trade` | `10` | Maximum trade size in quote currency |
+| `--min-profit` | `20` | Minimum profit in basis points |
+| `--format` | `text` | Output format: `text`, `json`, `csv` |
+| `--verbose` | `true` | Enable verbose output |
+
+### Safety Features
+
+- **Dry Run Mode**: Enabled by default - detects opportunities without executing
+- **Balance Checking**: Verifies sufficient balance before each trade
+- **Rate Limiting**: Minimum 5 seconds between trade attempts
+- **Maximum Trade Size**: Configurable per-exchange limits
+- **Minimum Profit Threshold**: Only executes trades above minimum profit
+
+### Supported Executors
+
+| Exchange | Type | Features |
+|----------|------|----------|
+| **GSwap** | DEX | Swap execution via GalaChain API, balance checking |
+| **Binance** | CEX | Market/limit orders, HMAC authentication, US fallback |
+
+### Trade Execution Flow
+
+1. **Opportunity Detection**: WebSocket aggregator detects arbitrage opportunity
+2. **Validation**: Checks profit threshold, expiry, and validity
+3. **Balance Check**: Verifies sufficient balance on both exchanges
+4. **Execution**: Places buy order, then sell order
+5. **Profit Calculation**: Calculates actual profit from filled orders
+
+### Environment Variables for Trading
+
+```bash
+# GSwap (DEX)
+GSWAP_PRIVATE_KEY=0x...          # Ethereum-compatible private key
+GSWAP_WALLET_ADDRESS=0x...       # Optional (derived from key)
+GSWAP_TRADING_ENABLED=true
+GSWAP_MAX_TRADE_SIZE=100
+
+# Binance
+BINANCE_API_KEY=...
+BINANCE_SECRET=...
+BINANCE_TRADING_ENABLED=true
+BINANCE_MAX_TRADE_SIZE=100
+```
+
 ## Future Enhancements
 
-- [ ] Trade execution (move beyond detection)
+- [x] Trade execution (move beyond detection)
+- [x] Multi-hop chain arbitrage detection
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
-- [ ] Multi-hop arbitrage detection (triangular arbitrage)
 - [ ] Gas/transaction cost estimation for DEX trades
 - [ ] GSwap WebSocket support (when available from GalaChain)
 - [ ] Additional GalaChain token pairs
+- [ ] More CEX executors (Coinbase, Kraken, etc.)
 
 ## License
 
