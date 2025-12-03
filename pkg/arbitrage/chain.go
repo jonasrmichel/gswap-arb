@@ -12,13 +12,13 @@ import (
 // ChainArbitrageDetector detects arbitrage opportunities across chains of exchanges.
 type ChainArbitrageDetector struct {
 	config   *types.ArbitrageConfig
-	maxHops  int // Maximum number of hops in a chain (default: 3)
+	maxHops  int // Maximum number of hops in a chain (default: 5)
 }
 
 // NewChainArbitrageDetector creates a new chain arbitrage detector.
 func NewChainArbitrageDetector(config *types.ArbitrageConfig, maxHops int) *ChainArbitrageDetector {
 	if maxHops <= 0 {
-		maxHops = 3 // Default to 3-hop chains
+		maxHops = 5 // Default to 5-hop chains
 	}
 	return &ChainArbitrageDetector{
 		config:  config,

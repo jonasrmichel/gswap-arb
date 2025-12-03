@@ -50,7 +50,7 @@ type AggregatorConfig struct {
 	MinNetProfitBps  int           // Minimum net profit after fees
 	StaleThreshold   time.Duration // How long before a price is considered stale
 	DefaultTradeSize float64       // Default trade size for calculations
-	MaxChainHops     int           // Maximum hops in chain arbitrage (default: 3)
+	MaxChainHops     int           // Maximum hops in chain arbitrage (default: 5)
 }
 
 // DefaultAggregatorConfig returns default configuration.
@@ -60,7 +60,7 @@ func DefaultAggregatorConfig() *AggregatorConfig {
 		MinNetProfitBps:  20,
 		StaleThreshold:   10 * time.Second,
 		DefaultTradeSize: 1000.0,
-		MaxChainHops:     3,
+		MaxChainHops:     5,
 	}
 }
 
