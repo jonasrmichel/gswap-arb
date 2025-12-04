@@ -19,10 +19,11 @@
   - Bybit
 
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
-- **Trade execution**: Execute arbitrage trades on GSwap and Binance (with safety limits)
+- **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges) and GSwap DEX
 - **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
 - **WebSocket support**: Real-time price feeds for ultra-low latency detection
 - **GSwap DEX integration**: Polls GalaChain composite pool API for DEX prices
+- **Slack notifications**: Real-time alerts for opportunities and trade executions
 - **Configurable thresholds**: Set minimum spread, profit margins, and trade sizes
 - **Multiple output formats**: Text, JSON, or CSV
 - **Dry-run mode**: Detect opportunities without executing trades (default)
@@ -66,6 +67,8 @@ gswap-arb/
 │   │       ├── kraken.go     # Kraken WebSocket
 │   │       ├── okx.go        # OKX WebSocket
 │   │       └── bybit.go      # Bybit WebSocket
+│   ├── notifier/
+│   │   └── slack.go          # Slack notification integration
 │   ├── reporter/
 │   │   └── reporter.go       # Output formatting & reporting
 │   └── types/
@@ -131,6 +134,26 @@ go run ./cmd/bot-ws --show-updates
 go run ./cmd/bot-ws --format json
 ```
 
+### Trading Bot Mode (Execution)
+
+The trading bot combines real-time detection with trade execution:
+
+```bash
+# Build the trading bot
+go build -o gswap-trader ./cmd/bot-trader
+
+# Run in dry-run mode (default, recommended for testing)
+./gswap-trader
+
+# Run with custom settings
+./gswap-trader --max-trade=50 --min-profit=30
+
+# Run with LIVE trading (BE CAREFUL!)
+./gswap-trader --dry-run=false --max-trade=10 --min-profit=50
+```
+
+**Warning**: Live trading involves real funds. Always test thoroughly in dry-run mode first.
+
 ### Command Line Options
 
 #### REST API Bot (`./cmd/bot`)
@@ -152,6 +175,17 @@ go run ./cmd/bot-ws --format json
 | `--verbose` | `true` | Enable verbose output |
 | `--show-updates` | `false` | Show all price updates (very verbose) |
 
+#### Trading Bot (`./cmd/bot-trader`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | - | Path to JSON configuration file |
+| `--dry-run` | `true` | Dry run mode (no real trades) |
+| `--max-trade` | `10` | Maximum trade size in quote currency |
+| `--min-profit` | `20` | Minimum profit in basis points |
+| `--format` | `text` | Output format: `text`, `json`, `csv` |
+| `--verbose` | `true` | Enable verbose output |
+
 ### Environment Variables
 
 ```bash
@@ -165,11 +199,24 @@ ARB_MIN_SPREAD_BPS=50
 ARB_MIN_NET_PROFIT_BPS=20
 ARB_DEFAULT_TRADE_SIZE=1000
 
-# Exchange API keys (optional, for authenticated endpoints)
+# Exchange API keys (for trading)
 BINANCE_API_KEY=your_key
 BINANCE_SECRET=your_secret
-COINBASE_API_KEY=your_key
-COINBASE_SECRET=your_secret
+BINANCE_TRADING_ENABLED=false
+
+KRAKEN_API_KEY=your_key
+KRAKEN_SECRET=your_secret
+KRAKEN_TRADING_ENABLED=false
+
+# GSwap DEX (for trading)
+GSWAP_PRIVATE_KEY=your_private_key
+GSWAP_WALLET_ADDRESS=your_wallet_address
+GSWAP_TRADING_ENABLED=false
+
+# Slack notifications
+SLACK_ENABLED=true
+SLACK_API_TOKEN=xoxb-your-bot-token
+SLACK_CHANNEL=#your-channel
 ```
 
 ## Configuration
@@ -407,30 +454,6 @@ GSWAP_TRADING_ENABLED=true
 GSWAP_MAX_TRADE_SIZE=100
 ```
 
-### Running the Trading Bot
-
-```bash
-# Build the trading bot
-go build -o gswap-trader ./cmd/bot-trader
-
-# Run in dry-run mode (recommended for testing)
-./gswap-trader --dry-run=true --max-trade=10
-
-# Run with real trading (BE CAREFUL!)
-./gswap-trader --dry-run=false --max-trade=10 --min-profit=50
-```
-
-### Trading Bot Options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--config` | - | Path to JSON configuration file |
-| `--dry-run` | `true` | Dry run mode (no real trades) |
-| `--max-trade` | `10` | Maximum trade size in quote currency |
-| `--min-profit` | `20` | Minimum profit in basis points |
-| `--format` | `text` | Output format: `text`, `json`, `csv` |
-| `--verbose` | `true` | Enable verbose output |
-
 ### Safety Features
 
 - **Dry Run Mode**: Enabled by default - detects opportunities without executing
@@ -486,6 +509,7 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Trade execution (move beyond detection)
 - [x] Multi-hop chain arbitrage detection
 - [x] CCXT integration for unified CEX support (10+ exchanges)
+- [x] Slack notifications for opportunities and trades
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades
