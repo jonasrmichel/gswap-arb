@@ -28,6 +28,7 @@
 - **Multiple output formats**: Text, JSON, or CSV
 - **Dry-run mode**: Detect opportunities without executing trades (default)
 - **Safety features**: Balance checking, rate limiting, configurable trade limits
+- **Bridge CLI**: Manual bridge transfers between GalaChain and Ethereum
 
 ## Project Structure
 
@@ -38,8 +39,10 @@ gswap-arb/
 │   │   └── main.go           # REST API-based bot (polling)
 │   ├── bot-ws/
 │   │   └── main.go           # WebSocket-based bot (real-time)
-│   └── bot-trader/
-│       └── main.go           # Trading bot with execution
+│   ├── bot-trader/
+│   │   └── main.go           # Trading bot with execution
+│   └── bridge/
+│       └── main.go           # Bridge CLI for cross-chain transfers
 ├── pkg/
 │   ├── arbitrage/
 │   │   ├── detector.go       # Arbitrage detection logic
@@ -67,6 +70,9 @@ gswap-arb/
 │   │       ├── kraken.go     # Kraken WebSocket
 │   │       ├── okx.go        # OKX WebSocket
 │   │       └── bybit.go      # Bybit WebSocket
+│   ├── bridge/
+│   │   ├── types.go          # Bridge types and token configuration
+│   │   └── bridge.go         # Bridge executor implementation
 │   ├── notifier/
 │   │   └── slack.go          # Slack notification integration
 │   ├── reporter/
@@ -154,6 +160,42 @@ go build -o gswap-trader ./cmd/bot-trader
 
 **Warning**: Live trading involves real funds. Always test thoroughly in dry-run mode first.
 
+### Bridge CLI (Cross-Chain Transfers)
+
+The bridge CLI allows manual transfers between GalaChain and Ethereum:
+
+```bash
+# Build the bridge CLI
+go build -o gswap-bridge ./cmd/bridge
+
+# List supported tokens
+./gswap-bridge --list
+
+# Check your GalaChain balances
+./gswap-bridge --balance
+
+# Bridge 100 GALA from GalaChain to Ethereum
+./gswap-bridge --direction to-eth --token GALA --amount 100
+
+# Bridge 50 GUSDC from Ethereum to GalaChain
+./gswap-bridge --direction to-gala --token GUSDC --amount 50
+
+# Check bridge transaction status
+./gswap-bridge --status <transaction-id>
+```
+
+#### Supported Bridge Tokens
+
+| Token | Ethereum Address | Decimals | Permit |
+|-------|------------------|----------|--------|
+| GALA | 0xd1d2Eb1B1e90B638588728b4130137D262C87cae | 8 | Yes |
+| GWETH | 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 | 18 | No |
+| GUSDC | 0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48 | 6 | No |
+| GUSDT | 0xdAC17F958D2ee523a2206206994597C13D831ec7 | 6 | No |
+| GWTRX | 0x50327c6c5a14DCaDE707ABad2E27eB517df87AB5 | 6 | No |
+| GWBTC | 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 | 8 | No |
+| BENE | 0x624d739b88429a4cac97c9282adc226620c025d1 | 18 | No |
+
 ### Command Line Options
 
 #### REST API Bot (`./cmd/bot`)
@@ -185,6 +227,19 @@ go build -o gswap-trader ./cmd/bot-trader
 | `--min-profit` | `20` | Minimum profit in basis points |
 | `--format` | `text` | Output format: `text`, `json`, `csv` |
 | `--verbose` | `true` | Enable verbose output |
+
+#### Bridge CLI (`./cmd/bridge`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--direction` | - | Bridge direction: `to-eth` or `to-gala` |
+| `--token` | - | Token to bridge (GALA, GWETH, GUSDC, etc.) |
+| `--amount` | - | Amount to bridge |
+| `--to` | - | Destination address (optional) |
+| `--balance` | `false` | Show GalaChain balances |
+| `--status` | - | Check bridge transaction status |
+| `--list` | `false` | List supported tokens |
+| `--private-key` | - | Wallet private key (or use env var) |
 
 ### Environment Variables
 
@@ -510,6 +565,7 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Multi-hop chain arbitrage detection
 - [x] CCXT integration for unified CEX support (10+ exchanges)
 - [x] Slack notifications for opportunities and trades
+- [x] Bridge CLI for GalaChain ↔ Ethereum transfers
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades
