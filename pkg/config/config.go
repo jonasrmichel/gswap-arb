@@ -53,11 +53,11 @@ type ArbitrageSettings struct {
 
 // ExchangeSettings holds configuration for a single exchange.
 type ExchangeSettings struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"` // "dex" or "cex"
-	Enabled  bool   `json:"enabled"`
-	BaseURL  string `json:"base_url,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"` // "dex" or "cex"
+	Enabled bool   `json:"enabled"`
+	BaseURL string `json:"base_url,omitempty"`
 
 	// API credentials for CEXs
 	APIKey     string `json:"api_key,omitempty"`
@@ -69,7 +69,7 @@ type ExchangeSettings struct {
 	WalletAddress string `json:"wallet_address,omitempty"` // Derived or explicit wallet address
 
 	// Trading settings per exchange
-	TradingEnabled bool    `json:"trading_enabled"` // Allow actual trades (not just detection)
+	TradingEnabled bool    `json:"trading_enabled"`          // Allow actual trades (not just detection)
 	MaxTradeSize   float64 `json:"max_trade_size,omitempty"` // Max single trade size
 }
 
@@ -98,10 +98,10 @@ func DefaultConfig() *Config {
 		DryRun:           true,
 
 		Arbitrage: ArbitrageSettings{
-			MinSpreadBps:      50,    // 0.5%
-			MinNetProfitBps:   20,    // 0.2%
-			MaxPriceImpactBps: 500,   // 5%
-			DefaultTradeSize:  1000,  // $1000 equivalent
+			MinSpreadBps:      50,   // 0.5%
+			MinNetProfitBps:   20,   // 0.2%
+			MaxPriceImpactBps: 500,  // 5%
+			DefaultTradeSize:  1000, // $1000 equivalent
 			QuoteValiditySecs: 30,
 		},
 
@@ -121,8 +121,12 @@ func DefaultConfig() *Config {
 			{Symbol: "ETH", Name: "Ethereum", Decimals: 18},
 			{Symbol: "USDT", Name: "Tether", Decimals: 6},
 			{Symbol: "USDC", Name: "USD Coin", Decimals: 6},
+			{Symbol: "USD", Name: "US Dollar", Decimals: 2},
+			{Symbol: "USDUC", Name: "USD Coin (GalaChain)", Decimals: 6, GalaChainMint: "GUSDUC|Unit|none|none"},
 			{Symbol: "BTC", Name: "Bitcoin", Decimals: 8},
 			{Symbol: "SOL", Name: "Solana", Decimals: 9},
+			{Symbol: "TRX", Name: "TRON", Decimals: 6},
+			{Symbol: "MEW", Name: "Mew", Decimals: 8, GalaChainMint: "GMEW|Unit|none|none"},
 		},
 
 		Pairs: []PairSettings{
@@ -130,6 +134,10 @@ func DefaultConfig() *Config {
 			{Pair: "ETH/USDT", Exchanges: []string{"gswap", "binance", "coinbase", "kraken"}, Enabled: true},
 			{Pair: "BTC/USDT", Exchanges: []string{"binance", "coinbase", "kraken"}, Enabled: true},
 			{Pair: "SOL/USDT", Exchanges: []string{"binance", "coinbase", "kraken"}, Enabled: true},
+			{Pair: "USDUC/USDT", Exchanges: []string{"kraken"}, Enabled: true},
+			{Pair: "USDUC/USDC", Exchanges: []string{"kraken"}, Enabled: true},
+			{Pair: "TRX/USDT", Exchanges: []string{"binance"}, Enabled: true},
+			{Pair: "MEW/GALA", Exchanges: []string{"gswap"}, Enabled: true},
 		},
 	}
 }

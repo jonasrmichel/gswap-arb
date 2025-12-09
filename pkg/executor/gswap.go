@@ -154,16 +154,20 @@ func NewGSwapExecutor(privateKeyHex, walletAddress string) (*GSwapExecutor, erro
 // initializeTokens sets up known GalaChain tokens.
 func (g *GSwapExecutor) initializeTokens() {
 	g.tokens = map[string]gswapToken{
-		"GALA":  {Symbol: "GALA", GalaChainKey: "GALA|Unit|none|none", Decimals: 8},
-		"GWETH": {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
-		"GUSDC": {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
-		"GUSDT": {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
-		"GSOL":  {Symbol: "GSOL", GalaChainKey: "GSOL|Unit|none|none", Decimals: 9},
-		"GWBTC": {Symbol: "GWBTC", GalaChainKey: "GWBTC|Unit|none|none", Decimals: 8},
+		"GALA":   {Symbol: "GALA", GalaChainKey: "GALA|Unit|none|none", Decimals: 8},
+		"GWETH":  {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
+		"GUSDC":  {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
+		"GUSDT":  {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
+		"GUSDUC": {Symbol: "GUSDUC", GalaChainKey: "GUSDUC|Unit|none|none", Decimals: 6},
+		"GSOL":   {Symbol: "GSOL", GalaChainKey: "GSOL|Unit|none|none", Decimals: 9},
+		"GWBTC":  {Symbol: "GWBTC", GalaChainKey: "GWBTC|Unit|none|none", Decimals: 8},
+		"GMEW":   {Symbol: "GMEW", GalaChainKey: "GMEW|Unit|none|none", Decimals: 8},
 		// Aliases
-		"ETH":  {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
-		"USDC": {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
-		"USDT": {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
+		"ETH":   {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
+		"USDC":  {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
+		"USDT":  {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
+		"USDUC": {Symbol: "GUSDUC", GalaChainKey: "GUSDUC|Unit|none|none", Decimals: 6},
+		"MEW":   {Symbol: "GMEW", GalaChainKey: "GMEW|Unit|none|none", Decimals: 8},
 	}
 }
 

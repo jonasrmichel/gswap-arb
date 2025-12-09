@@ -178,6 +178,11 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 			GalaChainMint: "GUSDT|Unit|none|none",
 			Decimals:      6,
 		},
+		"GUSDUC": {
+			Symbol:        "GUSDUC",
+			GalaChainMint: "GUSDUC|Unit|none|none",
+			Decimals:      6,
+		},
 		"GSOL": {
 			Symbol:        "GSOL",
 			GalaChainMint: "GSOL|Unit|none|none",
@@ -186,6 +191,11 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 		"GWBTC": {
 			Symbol:        "GWBTC",
 			GalaChainMint: "GWBTC|Unit|none|none",
+			Decimals:      8,
+		},
+		"GMEW": {
+			Symbol:        "GMEW",
+			GalaChainMint: "GMEW|Unit|none|none",
 			Decimals:      8,
 		},
 	}
@@ -198,6 +208,8 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 		{Base: types.Token{Symbol: "GSOL"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GSOL/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GWBTC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GWBTC/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GWETH"}, Quote: types.Token{Symbol: "GUSDC"}, Symbol: "GWETH/GUSDC", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "GMEW"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GMEW/GALA", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "GUSDUC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GUSDUC/GALA", Exchange: "gswap"},
 	}
 
 	return nil
@@ -413,15 +425,19 @@ func mapCEXPairToGSwap(pair string) string {
 
 	mappings := map[string]string{
 		// Keep base = GALA, quote = stable
-		"GALA/USDT": "GALA/GUSDT",
-		"GALA/USDC": "GALA/GUSDC",
-		"ETH/GALA":  "GWETH/GALA",
-		"BTC/GALA":  "GWBTC/GALA",
-		"SOL/GALA":  "GSOL/GALA",
+		"GALA/USDT":  "GALA/GUSDT",
+		"GALA/USDC":  "GALA/GUSDC",
+		"USDUC/GALA": "GUSDUC/GALA",
+		"ETH/GALA":   "GWETH/GALA",
+		"BTC/GALA":   "GWBTC/GALA",
+		"SOL/GALA":   "GSOL/GALA",
 
 		// Wrapped ETH vs USDC
 		"ETH/USDC":  "GWETH/GUSDC",
 		"WETH/USDC": "GWETH/GUSDC",
+
+		// MEW on GalaChain
+		"MEW/GALA": "GMEW/GALA",
 	}
 
 	if mapped, ok := mappings[pair]; ok {

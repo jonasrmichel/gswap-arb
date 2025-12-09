@@ -166,18 +166,24 @@ func mapToGSwapPair(pair string) string {
 	// Map common CEX pairs to GSwap equivalents
 	pairMappings := map[string]string{
 		// GALA pairs
-		"GALA/USDT": "GUSDT/GALA", // Note: inverted, GUSDT is base on GSwap
-		"GALA/USDC": "GUSDC/GALA",
-		"ETH/GALA":  "GWETH/GALA",
-		"BTC/GALA":  "GBTC/GALA",
-		"SOL/GALA":  "GSOL/GALA",
+		"GALA/USDT":  "GALA/GUSDT",
+		"GALA/USDC":  "GALA/GUSDC",
+		"USDUC/GALA": "GUSDUC/GALA",
+		"ETH/GALA":   "GWETH/GALA",
+		"BTC/GALA":   "GBTC/GALA",
+		"SOL/GALA":   "GSOL/GALA",
+
+		// MEW on GalaChain
+		"MEW/GALA": "GMEW/GALA",
 
 		// Direct GSwap pairs
-		"GWETH/GALA": "GWETH/GALA",
-		"GUSDT/GALA": "GUSDT/GALA",
-		"GUSDC/GALA": "GUSDC/GALA",
-		"GBTC/GALA":  "GBTC/GALA",
-		"GSOL/GALA":  "GSOL/GALA",
+		"GWETH/GALA":  "GWETH/GALA",
+		"GUSDT/GALA":  "GUSDT/GALA",
+		"GUSDC/GALA":  "GUSDC/GALA",
+		"GUSDUC/GALA": "GUSDUC/GALA",
+		"GBTC/GALA":   "GBTC/GALA",
+		"GSOL/GALA":   "GSOL/GALA",
+		"GMEW/GALA":   "GMEW/GALA",
 	}
 
 	if mapped, ok := pairMappings[pair]; ok {
@@ -190,13 +196,15 @@ func mapToGSwapPair(pair string) string {
 // mapFromGSwapPair maps a GSwap pair back to the standard comparison pair.
 func mapFromGSwapPair(gswapPair string) string {
 	// For arbitrage comparison, we need to use a common pair format
-	// GSwap uses GUSDT/GALA but CEXs use GALA/USDT
+	// Keep base/quote in the same order we requested.
 	pairMappings := map[string]string{
-		"GUSDT/GALA": "GALA/USDT",
-		"GUSDC/GALA": "GALA/USDC",
-		"GWETH/GALA": "ETH/GALA",
-		"GBTC/GALA":  "BTC/GALA",
-		"GSOL/GALA":  "SOL/GALA",
+		"GALA/GUSDT":  "GALA/USDT",
+		"GALA/GUSDC":  "GALA/USDC",
+		"GUSDUC/GALA": "USDUC/GALA",
+		"GWETH/GALA":  "ETH/GALA",
+		"GBTC/GALA":   "BTC/GALA",
+		"GSOL/GALA":   "SOL/GALA",
+		"GMEW/GALA":   "MEW/GALA",
 	}
 
 	if mapped, ok := pairMappings[gswapPair]; ok {
@@ -211,5 +219,7 @@ func GetGSwapSupportedPairs() []string {
 	return []string{
 		"GALA/USDT",
 		"GALA/USDC",
+		"USDUC/GALA",
+		"MEW/GALA",
 	}
 }
