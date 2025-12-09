@@ -169,39 +169,75 @@ func listTokens() {
 
 func showBalances(ctx context.Context, executor *bridge.BridgeExecutor) {
 	galaAddr, ethAddr := executor.GetWalletAddresses()
-	fmt.Println("GalaChain Balances")
-	fmt.Println("==================")
-	fmt.Printf("GalaChain Address: %s\n", executor.GetGalaChainAddress())
-	fmt.Printf("Ethereum Address:  %s\n", ethAddr)
-	fmt.Println()
 
 	if galaAddr == "" {
 		fmt.Println("Error: Wallet not configured")
 		return
 	}
 
+	fmt.Println("Wallet Addresses")
+	fmt.Println("================")
+	fmt.Printf("GalaChain: %s\n", executor.GetGalaChainAddress())
+	fmt.Printf("Ethereum:  %s\n", ethAddr)
+	fmt.Println()
+
+	symbols := bridge.GetSupportedSymbols()
+
+	// Show GalaChain balances
+	fmt.Println("GalaChain Balances")
+	fmt.Println("==================")
 	fmt.Printf("%-8s %20s\n", "Token", "Balance")
 	fmt.Println(strings.Repeat("-", 30))
 
-	symbols := bridge.GetSupportedSymbols()
 	for _, symbol := range symbols {
 		balance, err := executor.GetGalaChainBalance(ctx, symbol)
 		if err != nil {
-			fmt.Printf("%-8s %20s\n", symbol, "Error: "+err.Error())
+			fmt.Printf("%-8s %20s\n", symbol, "Error")
 			continue
 		}
-
-		// Format balance
-		balanceStr := balance.Text('f', 8)
-		// Trim trailing zeros
-		balanceStr = strings.TrimRight(strings.TrimRight(balanceStr, "0"), ".")
-		if balanceStr == "" {
-			balanceStr = "0"
-		}
-
-		fmt.Printf("%-8s %20s\n", symbol, balanceStr)
+		fmt.Printf("%-8s %20s\n", symbol, formatBalance(balance))
 	}
 	fmt.Println()
+
+	// Show Ethereum balances if RPC is configured
+	if executor.GetEthereumRPCConfigured() {
+		fmt.Println("Ethereum Balances")
+		fmt.Println("=================")
+		fmt.Printf("%-8s %20s\n", "Token", "Balance")
+		fmt.Println(strings.Repeat("-", 30))
+
+		// Show native ETH balance first
+		ethBalance, err := executor.GetEthereumBalance(ctx, "ETH")
+		if err != nil {
+			fmt.Printf("%-8s %20s\n", "ETH", "Error")
+		} else {
+			fmt.Printf("%-8s %20s\n", "ETH", formatBalance(ethBalance))
+		}
+
+		// Show ERC-20 token balances
+		for _, symbol := range symbols {
+			balance, err := executor.GetEthereumBalance(ctx, symbol)
+			if err != nil {
+				fmt.Printf("%-8s %20s\n", symbol, "Error")
+				continue
+			}
+			fmt.Printf("%-8s %20s\n", symbol, formatBalance(balance))
+		}
+		fmt.Println()
+	} else {
+		fmt.Println("Ethereum Balances: Not available (ETH_RPC_URL not configured)")
+		fmt.Println()
+	}
+}
+
+func formatBalance(balance *big.Float) string {
+	balanceStr := balance.Text('f', 8)
+	// Trim trailing zeros
+	balanceStr = strings.TrimRight(strings.TrimRight(balanceStr, "0"), ".")
+	if balanceStr == "" {
+		balanceStr = "0"
+	}
+	return balanceStr
 }
 
 func checkStatus(ctx context.Context, executor *bridge.BridgeExecutor, txID string) {

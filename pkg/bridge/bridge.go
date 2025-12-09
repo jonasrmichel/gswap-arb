@@ -199,6 +199,62 @@ func (b *BridgeExecutor) GetGalaChainBalance(ctx context.Context, token string) 
 	return big.NewFloat(0), nil
 }
 
+// GetEthereumBalance returns the balance for a token on Ethereum.
+// For native ETH, pass "ETH" as the token symbol.
+func (b *BridgeExecutor) GetEthereumBalance(ctx context.Context, token string) (*big.Float, error) {
+	if b.ethRPCURL == "" {
+		return nil, fmt.Errorf("Ethereum RPC URL not configured")
+	}
+
+	// Connect to Ethereum
+	client, err := ethclient.DialContext(ctx, b.ethRPCURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
+	}
+	defer client.Close()
+
+	walletAddress := common.HexToAddress(b.ethWalletAddress)
+
+	// Handle native ETH balance
+	if token == "ETH" {
+		balance, err := client.BalanceAt(ctx, walletAddress, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ETH balance: %w", err)
+		}
+		return fromBaseUnits(balance, 18), nil
+	}
+
+	// Get token info
+	tokenInfo, ok := GetTokenBySymbol(token)
+	if !ok {
+		return nil, fmt.Errorf("unsupported token: %s", token)
+	}
+
+	// Parse ERC20 ABI
+	erc20ParsedABI, err := abi.JSON(strings.NewReader(erc20ABI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ERC20 ABI: %w", err)
+	}
+
+	// Get token balance
+	tokenAddress := common.HexToAddress(tokenInfo.Address)
+	tokenContract := bind.NewBoundContract(tokenAddress, erc20ParsedABI, client, client, client)
+
+	var balanceResult []interface{}
+	err = tokenContract.Call(&bind.CallOpts{Context: ctx}, &balanceResult, "balanceOf", walletAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token balance: %w", err)
+	}
+
+	balance := balanceResult[0].(*big.Int)
+	return fromBaseUnits(balance, tokenInfo.Decimals), nil
+}
+
+// GetEthereumRPCConfigured returns whether Ethereum RPC is configured.
+func (b *BridgeExecutor) GetEthereumRPCConfigured() bool {
+	return b.ethRPCURL != ""
+}
+
 // BridgeToEthereum initiates a bridge transfer from GalaChain to Ethereum.
 // This uses the GalaConnect DEX API which requires a two-step process:
 // 1. RequestTokenBridgeOut - get bridge fee info and create request
