@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jonasrmichel/gswap-arb/pkg/bridge"
 	"github.com/jonasrmichel/gswap-arb/pkg/config"
 	"github.com/jonasrmichel/gswap-arb/pkg/executor"
 	"github.com/jonasrmichel/gswap-arb/pkg/inventory"
@@ -30,6 +31,8 @@ var (
 	minProfit        = flag.Int("min-profit", 20, "Minimum profit in basis points")
 	inventoryCheck   = flag.Bool("inventory", true, "Enable inventory monitoring")
 	driftThreshold   = flag.Float64("drift-threshold", 20.0, "Drift threshold percentage for alerts")
+	autoRebalance    = flag.Bool("auto-rebalance", false, "Enable automatic rebalancing (requires bridge config)")
+	ethRPC           = flag.String("eth-rpc", "", "Ethereum RPC URL for bridging (or use ETH_RPC_URL env)")
 )
 
 func main() {
@@ -189,6 +192,132 @@ func main() {
 		fmt.Printf("Inventory monitoring enabled (drift threshold: %.1f%%)\n", *driftThreshold)
 	}
 
+	// Create auto-rebalancer if enabled
+	var autoRebalancer *inventory.AutoRebalancer
+	if *autoRebalance && invManager != nil {
+		// Get private key for bridge operations
+		privateKey := os.Getenv("GSWAP_PRIVATE_KEY")
+		if privateKey == "" {
+			fmt.Println("Warning: Auto-rebalance enabled but GSWAP_PRIVATE_KEY not set")
+		} else {
+			// Get Ethereum RPC URL
+			ethRPCURL := *ethRPC
+			if ethRPCURL == "" {
+				ethRPCURL = os.Getenv("ETH_RPC_URL")
+			}
+
+			// Create bridge executor
+			bridgeExec, err := bridge.NewBridgeExecutor(&bridge.BridgeConfig{
+				GalaChainPrivateKey: privateKey,
+				EthereumPrivateKey:  privateKey, // Same key for both chains
+				EthereumRPCURL:      ethRPCURL,
+			})
+			if err != nil {
+				fmt.Printf("Warning: Failed to create bridge executor: %v\n", err)
+			} else {
+				// Create rebalancer config from settings
+				rebalConfig := &inventory.RebalancerConfig{
+					Enabled:                   true,
+					CheckIntervalSeconds:      cfg.Rebalancing.CheckIntervalSeconds,
+					BridgeStatusPollSeconds:   cfg.Rebalancing.BridgeStatusPollSeconds,
+					MaxBridgeWaitMinutes:      cfg.Rebalancing.MaxBridgeWaitMinutes,
+					MinTimeBetweenRebalances:  time.Duration(cfg.Rebalancing.MinTimeBetweenRebalances) * time.Second,
+					MaxPendingBridges:         cfg.Rebalancing.MaxPendingBridges,
+					CircuitBreakerThreshold:   cfg.Rebalancing.CircuitBreakerThreshold,
+					CircuitBreakerResetTime:   time.Duration(cfg.Rebalancing.CircuitBreakerResetMins) * time.Minute,
+					RequireConfirmation:       cfg.Rebalancing.RequireConfirmation,
+				}
+
+				autoRebalancer = inventory.NewAutoRebalancer(invManager, bridgeExec, rebalConfig)
+
+				// Set up Slack callbacks for auto-rebalance events
+				autoRebalancer.SetBridgeStartedCallback(func(rec *inventory.RebalanceRecommendation, result *bridge.BridgeResult) {
+					if *verbose {
+						fmt.Printf("\n[AUTO-REBALANCE] Started: %s %s from %s to %s\n",
+							rec.Amount.Text('f', 4), rec.Currency, rec.FromExchange, rec.ToExchange)
+						fmt.Printf("  Transaction: %s\n", result.TransactionID)
+					}
+					slackNotifier.NotifyAutoRebalanceStarted(&notifier.AutoRebalanceStarted{
+						Currency:      rec.Currency,
+						FromExchange:  rec.FromExchange,
+						ToExchange:    rec.ToExchange,
+						Amount:        rec.Amount.Text('f', 4),
+						TransactionID: result.TransactionID,
+						Reason:        rec.Reason,
+					})
+				})
+
+				autoRebalancer.SetBridgeCompletedCallback(func(rec *inventory.RebalanceRecommendation, result *bridge.BridgeResult) {
+					if *verbose {
+						fmt.Printf("\n[AUTO-REBALANCE] Completed: %s %s\n", rec.Amount.Text('f', 4), rec.Currency)
+					}
+					feeStr := "N/A"
+					if result.Fee != nil {
+						feeStr = result.Fee.Text('f', 4)
+					}
+					slackNotifier.NotifyAutoRebalanceCompleted(&notifier.AutoRebalanceCompleted{
+						Currency:      rec.Currency,
+						FromExchange:  rec.FromExchange,
+						ToExchange:    rec.ToExchange,
+						Amount:        rec.Amount.Text('f', 4),
+						TransactionID: result.TransactionID,
+						Duration:      time.Since(result.CreatedAt),
+						Fee:           feeStr,
+					})
+				})
+
+				autoRebalancer.SetBridgeFailedCallback(func(rec *inventory.RebalanceRecommendation, err error) {
+					if *verbose {
+						fmt.Printf("\n[AUTO-REBALANCE] Failed: %s %s - %v\n",
+							rec.Amount.Text('f', 4), rec.Currency, err)
+					}
+					slackNotifier.NotifyAutoRebalanceFailed(&notifier.AutoRebalanceFailed{
+						Currency:     rec.Currency,
+						FromExchange: rec.FromExchange,
+						ToExchange:   rec.ToExchange,
+						Amount:       rec.Amount.Text('f', 4),
+						Error:        err.Error(),
+						WillRetry:    !autoRebalancer.IsCircuitBreakerOpen(),
+					})
+				})
+
+				autoRebalancer.SetCircuitOpenCallback(func(failures int) {
+					if *verbose {
+						fmt.Printf("\n[CIRCUIT BREAKER] OPEN - %d consecutive failures\n", failures)
+					}
+					slackNotifier.NotifyCircuitBreakerAlert(&notifier.CircuitBreakerAlert{
+						State:            "OPEN",
+						ConsecutiveFails: failures,
+						Reason:           fmt.Sprintf("Auto-rebalancing paused after %d consecutive failures", failures),
+					})
+				})
+
+				autoRebalancer.SetCircuitCloseCallback(func() {
+					if *verbose {
+						fmt.Println("\n[CIRCUIT BREAKER] CLOSED - resuming auto-rebalance")
+					}
+					slackNotifier.NotifyCircuitBreakerAlert(&notifier.CircuitBreakerAlert{
+						State:            "CLOSED",
+						ConsecutiveFails: 0,
+						Reason:           "Auto-rebalancing resumed after cooldown period",
+					})
+				})
+
+				// Start the auto-rebalancer
+				if err := autoRebalancer.Start(ctx); err != nil {
+					fmt.Printf("Warning: Failed to start auto-rebalancer: %v\n", err)
+				} else {
+					fmt.Println("Auto-rebalancing enabled")
+					if ethRPCURL != "" {
+						fmt.Println("  Bidirectional bridging available (GalaChain <-> Ethereum)")
+					} else {
+						fmt.Println("  GalaChain -> Ethereum bridging only (set ETH_RPC_URL for bidirectional)")
+					}
+				}
+			}
+		}
+	}
+
 	// Set up arbitrage callback with execution
 	aggregator.OnArbitrage(func(opp *types.ArbitrageOpportunity) {
 		rep.ReportOpportunities([]*types.ArbitrageOpportunity{opp})
@@ -342,6 +471,13 @@ func main() {
 				fmt.Println(invManager.FormatDriftReport())
 			}
 
+			// Print auto-rebalancer status
+			if autoRebalancer != nil {
+				fmt.Println("\nAuto-Rebalancer Status:")
+				fmt.Println(autoRebalancer.FormatStatusReport())
+				autoRebalancer.Stop()
+			}
+
 			// Stop aggregator
 			aggregator.Stop()
 
@@ -352,7 +488,7 @@ func main() {
 			return
 
 		case <-statusTicker.C:
-			printStatus(aggregator, coordinator, rep, invManager)
+			printStatus(aggregator, coordinator, rep, invManager, autoRebalancer)
 
 		case <-func() <-chan time.Time {
 			if inventoryTicker != nil {
@@ -518,7 +654,7 @@ func getPairs(cfg *config.Config) []string {
 }
 
 // printStatus prints current status.
-func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordinator, rep *reporter.Reporter, invManager *inventory.Manager) {
+func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordinator, rep *reporter.Reporter, invManager *inventory.Manager, autoRebalancer *inventory.AutoRebalancer) {
 	stats := rep.GetStats()
 	execStats := coord.GetStats()
 
@@ -563,6 +699,23 @@ func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordi
 		if driftWarnings > 0 {
 			fmt.Printf("  [!] %d currencies with drift above threshold\n", driftWarnings)
 		}
+	}
+
+	// Auto-rebalancer status
+	if autoRebalancer != nil {
+		rebalStats := autoRebalancer.GetStats()
+		pending := autoRebalancer.GetPendingBridge()
+		circuitOpen := autoRebalancer.IsCircuitBreakerOpen()
+
+		rebalStatus := "idle"
+		if circuitOpen {
+			rebalStatus = "CIRCUIT OPEN"
+		} else if pending != nil {
+			rebalStatus = fmt.Sprintf("bridging %s", pending.Recommendation.Currency)
+		}
+
+		fmt.Printf("  Auto-rebalance: %s (triggered=%d, completed=%d, failed=%d)\n",
+			rebalStatus, rebalStats.RebalancesTriggered, rebalStats.RebalancesCompleted, rebalStats.RebalancesFailed)
 	}
 
 	fmt.Println(strings.Repeat("-", 60))

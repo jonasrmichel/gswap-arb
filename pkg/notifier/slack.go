@@ -497,3 +497,224 @@ func (s *SlackNotifier) NotifyInventorySummary(summary *InventorySummary) error 
 
 	return s.sendMessage(blocks, fmt.Sprintf("Inventory Status: %s - %d warnings, %d critical", statusText, summary.DriftWarnings, summary.CriticalDrifts))
 }
+
+// AutoRebalanceStarted represents an auto-rebalance bridge start notification.
+type AutoRebalanceStarted struct {
+	Currency      string
+	FromExchange  string
+	ToExchange    string
+	Amount        string
+	TransactionID string
+	Reason        string
+}
+
+// NotifyAutoRebalanceStarted sends a notification when an auto-rebalance bridge starts.
+func (s *SlackNotifier) NotifyAutoRebalanceStarted(rebal *AutoRebalanceStarted) error {
+	if !s.enabled || rebal == nil {
+		return nil
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: "🔄 Auto-Rebalance Started",
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currency:*\n%s", rebal.Currency)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Amount:*\n%s", rebal.Amount)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*From:*\n%s", rebal.FromExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*To:*\n%s", rebal.ToExchange)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Reason:* %s\n*Transaction:* `%s`", rebal.Reason, rebal.TransactionID),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Started at %s", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Auto-Rebalance Started: %s %s from %s to %s",
+		rebal.Amount, rebal.Currency, rebal.FromExchange, rebal.ToExchange))
+}
+
+// AutoRebalanceCompleted represents an auto-rebalance bridge completion notification.
+type AutoRebalanceCompleted struct {
+	Currency      string
+	FromExchange  string
+	ToExchange    string
+	Amount        string
+	TransactionID string
+	Duration      time.Duration
+	Fee           string
+}
+
+// NotifyAutoRebalanceCompleted sends a notification when an auto-rebalance bridge completes.
+func (s *SlackNotifier) NotifyAutoRebalanceCompleted(rebal *AutoRebalanceCompleted) error {
+	if !s.enabled || rebal == nil {
+		return nil
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: "✅ Auto-Rebalance Completed",
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currency:*\n%s", rebal.Currency)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Amount:*\n%s", rebal.Amount)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*From:*\n%s", rebal.FromExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*To:*\n%s", rebal.ToExchange)},
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Duration:*\n%s", rebal.Duration.Round(time.Second))},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Fee:*\n%s", rebal.Fee)},
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Completed at %s | Transaction: %s", time.Now().Format(time.RFC3339), rebal.TransactionID),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Auto-Rebalance Completed: %s %s bridged in %s",
+		rebal.Amount, rebal.Currency, rebal.Duration.Round(time.Second)))
+}
+
+// AutoRebalanceFailed represents an auto-rebalance failure notification.
+type AutoRebalanceFailed struct {
+	Currency     string
+	FromExchange string
+	ToExchange   string
+	Amount       string
+	Error        string
+	WillRetry    bool
+}
+
+// NotifyAutoRebalanceFailed sends a notification when an auto-rebalance fails.
+func (s *SlackNotifier) NotifyAutoRebalanceFailed(rebal *AutoRebalanceFailed) error {
+	if !s.enabled || rebal == nil {
+		return nil
+	}
+
+	retryText := "Will not retry automatically"
+	if rebal.WillRetry {
+		retryText = "Will retry on next check"
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: "❌ Auto-Rebalance Failed",
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currency:*\n%s", rebal.Currency)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Amount:*\n%s", rebal.Amount)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*From:*\n%s", rebal.FromExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*To:*\n%s", rebal.ToExchange)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Error:* %s\n*Status:* %s", rebal.Error, retryText),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Failed at %s | Consider manual intervention via rebalance CLI", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Auto-Rebalance Failed: %s %s - %s",
+		rebal.Amount, rebal.Currency, rebal.Error))
+}
+
+// CircuitBreakerAlert represents a circuit breaker state change notification.
+type CircuitBreakerAlert struct {
+	State           string // "OPEN" or "CLOSED"
+	ConsecutiveFails int
+	Reason          string
+}
+
+// NotifyCircuitBreakerAlert sends a notification when circuit breaker state changes.
+func (s *SlackNotifier) NotifyCircuitBreakerAlert(alert *CircuitBreakerAlert) error {
+	if !s.enabled || alert == nil {
+		return nil
+	}
+
+	var emoji, headerText string
+	if alert.State == "OPEN" {
+		emoji = "🛑"
+		headerText = "Circuit Breaker OPEN - Auto-Rebalancing Paused"
+	} else {
+		emoji = "✅"
+		headerText = "Circuit Breaker CLOSED - Auto-Rebalancing Resumed"
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s %s", emoji, headerText),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*State:*\n%s", alert.State)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Consecutive Failures:*\n%d", alert.ConsecutiveFails)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Reason:* %s", alert.Reason),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Triggered at %s", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Circuit Breaker %s: %s", alert.State, alert.Reason))
+}

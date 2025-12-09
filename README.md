@@ -77,7 +77,8 @@ gswap-arb/
 │   │   └── bridge.go         # Bridge executor implementation
 │   ├── inventory/
 │   │   ├── types.go          # Inventory tracking data structures
-│   │   └── manager.go        # Balance monitoring and drift detection
+│   │   ├── manager.go        # Balance monitoring and drift detection
+│   │   └── rebalancer.go     # Automated rebalancing logic
 │   ├── notifier/
 │   │   └── slack.go          # Slack notification integration
 │   ├── reporter/
@@ -302,6 +303,75 @@ When using `--execute`, the CLI provides an interactive flow:
 4. Prompts for confirmation before executing
 5. Optionally waits for bridge completion with `--wait`
 
+### Auto-Rebalancing (Trading Bot)
+
+The trading bot can be configured to automatically rebalance inventory when drift exceeds thresholds:
+
+```bash
+# Enable auto-rebalancing with the trading bot
+./gswap-trader --auto-rebalance
+
+# With Ethereum RPC for bidirectional bridging
+./gswap-trader --auto-rebalance --eth-rpc https://eth.llamarpc.com
+
+# Or set via environment variable
+export ETH_RPC_URL=https://eth.llamarpc.com
+./gswap-trader --auto-rebalance
+```
+
+#### How Auto-Rebalancing Works
+
+1. **Drift Monitoring**: Every 5 minutes, the bot collects balance snapshots and calculates drift from target allocations
+2. **Recommendation Generation**: When drift exceeds the threshold (default 20%), generates rebalance recommendations
+3. **Bridge Execution**: If `require_confirmation=false`, automatically executes the bridge operation
+4. **Status Tracking**: Polls bridge status until completion or timeout (default 30 minutes)
+5. **Circuit Breaker**: After 3 consecutive failures, pauses auto-rebalancing for 30 minutes
+
+#### Safety Features
+
+| Feature | Description |
+|---------|-------------|
+| **Circuit Breaker** | Automatically pauses after consecutive failures to prevent runaway issues |
+| **Confirmation Mode** | Default requires explicit confirmation before bridging |
+| **Single Bridge Limit** | Only one bridge operation at a time |
+| **Minimum Interval** | At least 10 minutes between rebalance operations |
+| **Slack Notifications** | Real-time alerts for bridge start, completion, failures, and circuit breaker state |
+
+#### Configuration
+
+Auto-rebalancing can be configured via environment variables or config file:
+
+```bash
+# Environment variables
+export REBALANCING_ENABLED=true
+export REBALANCING_AUTO_BRIDGE=true
+export REBALANCING_REQUIRE_CONFIRMATION=false  # Set to true for manual approval
+export REBALANCING_DRIFT_THRESHOLD_PCT=20
+export REBALANCING_CRITICAL_DRIFT_PCT=40
+export REBALANCING_CHECK_INTERVAL_SECONDS=300
+```
+
+Or in `config.json`:
+
+```json
+{
+  "rebalancing": {
+    "enabled": true,
+    "auto_bridge": true,
+    "require_confirmation": false,
+    "check_interval_seconds": 300,
+    "drift_threshold_pct": 20,
+    "critical_drift_pct": 40,
+    "min_rebalance_amount_usd": 50,
+    "max_rebalance_amount_usd": 1000,
+    "target_allocations": {
+      "gswap": {"GALA": 60, "USDT": 40},
+      "binance": {"GALA": 40, "USDT": 60}
+    }
+  }
+}
+```
+
 ### Command Line Options
 
 #### REST API Bot (`./cmd/bot`)
@@ -333,6 +403,10 @@ When using `--execute`, the CLI provides an interactive flow:
 | `--min-profit` | `20` | Minimum profit in basis points |
 | `--format` | `text` | Output format: `text`, `json`, `csv` |
 | `--verbose` | `true` | Enable verbose output |
+| `--inventory` | `true` | Enable inventory monitoring |
+| `--drift-threshold` | `20` | Drift threshold percentage for alerts |
+| `--auto-rebalance` | `false` | Enable automatic rebalancing |
+| `--eth-rpc` | - | Ethereum RPC URL for bridging (or use `ETH_RPC_URL` env) |
 
 #### Bridge CLI (`./cmd/bridge`)
 
@@ -705,7 +779,9 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Bridge CLI for GalaChain ↔ Ethereum transfers
 - [x] Inventory monitoring and drift detection
 - [x] Semi-automated rebalancing CLI
-- [ ] Automated rebalancing based on drift thresholds
+- [x] Automated rebalancing based on drift thresholds
+- [x] Circuit breaker for rebalancing failures
+- [ ] Cross-chain arbitrage detection (Phase 4)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades

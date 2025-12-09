@@ -22,6 +22,9 @@ type Config struct {
 	// Arbitrage settings
 	Arbitrage ArbitrageSettings `json:"arbitrage"`
 
+	// Rebalancing settings
+	Rebalancing RebalancingSettings `json:"rebalancing"`
+
 	// Exchange settings
 	Exchanges []ExchangeSettings `json:"exchanges"`
 
@@ -40,6 +43,62 @@ type SlackSettings struct {
 	Enabled  bool   `json:"enabled"`
 	APIToken string `json:"api_token,omitempty"`
 	Channel  string `json:"channel,omitempty"`
+}
+
+// RebalancingSettings holds inventory rebalancing configuration.
+type RebalancingSettings struct {
+	// Enable/disable features
+	Enabled              bool `json:"enabled"`                // Enable inventory monitoring
+	AutoBridge           bool `json:"auto_bridge"`            // Enable automatic bridging (vs manual/confirm)
+	RequireConfirmation  bool `json:"require_confirmation"`   // Require user confirmation before bridging
+
+	// Timing
+	CheckIntervalSeconds     int `json:"check_interval_seconds"`      // How often to check for drift (default: 300 = 5 min)
+	BridgeStatusPollSeconds  int `json:"bridge_status_poll_seconds"`  // How often to poll bridge status (default: 60)
+	MaxBridgeWaitMinutes     int `json:"max_bridge_wait_minutes"`     // Max time to wait for bridge (default: 30)
+	MinTimeBetweenRebalances int `json:"min_time_between_rebalances"` // Minimum seconds between rebalances (default: 600)
+
+	// Thresholds
+	DriftThresholdPct     float64 `json:"drift_threshold_pct"`      // Drift % to trigger rebalance (default: 20)
+	CriticalDriftPct      float64 `json:"critical_drift_pct"`       // Critical drift level (default: 40)
+	MinRebalanceAmountUSD float64 `json:"min_rebalance_amount_usd"` // Minimum USD value to bridge (default: 50)
+	MaxRebalanceAmountUSD float64 `json:"max_rebalance_amount_usd"` // Maximum USD value per bridge (default: 1000)
+
+	// Limits
+	MaxPendingBridges int `json:"max_pending_bridges"` // Max concurrent bridges (default: 1)
+
+	// Circuit breaker
+	CircuitBreakerThreshold  int `json:"circuit_breaker_threshold"`   // Consecutive failures to open (default: 3)
+	CircuitBreakerResetMins  int `json:"circuit_breaker_reset_mins"`  // Minutes to wait before retry (default: 30)
+
+	// Target allocations: exchange -> currency -> target percentage (0-100)
+	// Example: {"gswap": {"GALA": 60, "USDT": 40}, "binance": {"GALA": 40, "USDT": 60}}
+	TargetAllocations map[string]map[string]float64 `json:"target_allocations,omitempty"`
+
+	// Tracked currencies (if empty, track all)
+	TrackedCurrencies []string `json:"tracked_currencies,omitempty"`
+}
+
+// DefaultRebalancingSettings returns sensible defaults.
+func DefaultRebalancingSettings() RebalancingSettings {
+	return RebalancingSettings{
+		Enabled:                  false, // Disabled by default for safety
+		AutoBridge:               false, // Manual confirmation by default
+		RequireConfirmation:      true,
+		CheckIntervalSeconds:     300,   // 5 minutes
+		BridgeStatusPollSeconds:  60,    // 1 minute
+		MaxBridgeWaitMinutes:     30,
+		MinTimeBetweenRebalances: 600,   // 10 minutes
+		DriftThresholdPct:        20.0,
+		CriticalDriftPct:         40.0,
+		MinRebalanceAmountUSD:    50.0,
+		MaxRebalanceAmountUSD:    1000.0,
+		MaxPendingBridges:        1,
+		CircuitBreakerThreshold:  3,
+		CircuitBreakerResetMins:  30,
+		TargetAllocations:        make(map[string]map[string]float64),
+		TrackedCurrencies:        []string{"GALA", "USDT", "USDC", "GUSDC", "GUSDT"},
+	}
 }
 
 // ArbitrageSettings holds arbitrage-specific configuration.
@@ -104,6 +163,8 @@ func DefaultConfig() *Config {
 			DefaultTradeSize:  1000,  // $1000 equivalent
 			QuoteValiditySecs: 30,
 		},
+
+		Rebalancing: DefaultRebalancingSettings(),
 
 		Exchanges: []ExchangeSettings{
 			{ID: "gswap", Name: "GSwap", Type: "dex", Enabled: true},
@@ -202,6 +263,42 @@ func (c *Config) applyEnvOverrides() {
 		c.Slack.Channel = v
 	}
 
+	// Rebalancing settings
+	if v := os.Getenv("REBALANCING_ENABLED"); v != "" {
+		c.Rebalancing.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("REBALANCING_AUTO_BRIDGE"); v != "" {
+		c.Rebalancing.AutoBridge = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("REBALANCING_REQUIRE_CONFIRMATION"); v != "" {
+		c.Rebalancing.RequireConfirmation = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("REBALANCING_CHECK_INTERVAL_SECONDS"); v != "" {
+		if val, err := parseInt(v); err == nil {
+			c.Rebalancing.CheckIntervalSeconds = val
+		}
+	}
+	if v := os.Getenv("REBALANCING_DRIFT_THRESHOLD_PCT"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.Rebalancing.DriftThresholdPct = val
+		}
+	}
+	if v := os.Getenv("REBALANCING_CRITICAL_DRIFT_PCT"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.Rebalancing.CriticalDriftPct = val
+		}
+	}
+	if v := os.Getenv("REBALANCING_MIN_AMOUNT_USD"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.Rebalancing.MinRebalanceAmountUSD = val
+		}
+	}
+	if v := os.Getenv("REBALANCING_MAX_AMOUNT_USD"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.Rebalancing.MaxRebalanceAmountUSD = val
+		}
+	}
+
 	// Exchange API keys from environment
 	for i := range c.Exchanges {
 		envPrefix := strings.ToUpper(c.Exchanges[i].ID)
@@ -253,6 +350,35 @@ func (c *Config) ToArbitrageConfig() *types.ArbitrageConfig {
 		MaxPriceImpactBps: c.Arbitrage.MaxPriceImpactBps,
 		DefaultTradeSize:  big.NewFloat(c.Arbitrage.DefaultTradeSize),
 		QuoteValiditySecs: c.Arbitrage.QuoteValiditySecs,
+	}
+}
+
+// ToInventoryConfig converts rebalancing settings to inventory.InventoryConfig.
+func (c *Config) ToInventoryConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"drift_threshold_pct":      c.Rebalancing.DriftThresholdPct,
+		"critical_drift_pct":       c.Rebalancing.CriticalDriftPct,
+		"min_rebalance_amount_usd": c.Rebalancing.MinRebalanceAmountUSD,
+		"max_rebalance_amount_usd": c.Rebalancing.MaxRebalanceAmountUSD,
+		"check_interval_seconds":   c.Rebalancing.CheckIntervalSeconds,
+		"alert_on_drift":           true,
+		"target_allocations":       c.Rebalancing.TargetAllocations,
+		"tracked_currencies":       c.Rebalancing.TrackedCurrencies,
+	}
+}
+
+// ToRebalancerConfig converts rebalancing settings to inventory.RebalancerConfig.
+func (c *Config) ToRebalancerConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"enabled":                     c.Rebalancing.Enabled && c.Rebalancing.AutoBridge,
+		"check_interval_seconds":      c.Rebalancing.CheckIntervalSeconds,
+		"bridge_status_poll_seconds":  c.Rebalancing.BridgeStatusPollSeconds,
+		"max_bridge_wait_minutes":     c.Rebalancing.MaxBridgeWaitMinutes,
+		"min_time_between_rebalances": time.Duration(c.Rebalancing.MinTimeBetweenRebalances) * time.Second,
+		"max_pending_bridges":         c.Rebalancing.MaxPendingBridges,
+		"circuit_breaker_threshold":   c.Rebalancing.CircuitBreakerThreshold,
+		"circuit_breaker_reset_time":  time.Duration(c.Rebalancing.CircuitBreakerResetMins) * time.Minute,
+		"require_confirmation":        c.Rebalancing.RequireConfirmation,
 	}
 }
 
