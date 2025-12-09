@@ -994,10 +994,12 @@ func (b *BridgeExecutor) getGalaChainBridgeStatus(ctx context.Context, bridgeReq
 
 	if resp.StatusCode != http.StatusOK {
 		// If the status endpoint doesn't work, provide a helpful message
+		// Still include SourceTxHash so explorer links can be generated
 		return &BridgeResult{
 			TransactionID: bridgeRequestID,
 			Status:        BridgeStatusPending,
 			Direction:     BridgeToEthereum,
+			SourceTxHash:  bridgeRequestID,
 			Error: fmt.Sprintf("Bridge status lookup returned %d. "+
 				"GalaChain→Ethereum bridges typically complete in 10-30 minutes. "+
 				"Check your Ethereum wallet for incoming tokens.", resp.StatusCode),

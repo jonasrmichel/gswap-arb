@@ -181,3 +181,58 @@ func GetSupportedSymbols() []string {
 	}
 	return symbols
 }
+
+// Transaction explorer URLs
+const (
+	// GalaConnect bridge transaction explorer
+	GalaConnectBaseURL = "https://connect.gala.com/bridge/transaction/"
+	// Etherscan transaction explorer
+	EtherscanBaseURL = "https://etherscan.io/tx/"
+)
+
+// GetGalaConnectURL returns the GalaConnect explorer URL for a transaction.
+func GetGalaConnectURL(txHash string) string {
+	return GalaConnectBaseURL + txHash
+}
+
+// GetEtherscanURL returns the Etherscan explorer URL for a transaction.
+func GetEtherscanURL(txHash string) string {
+	return EtherscanBaseURL + txHash
+}
+
+// GetExplorerLinks returns explorer links for a bridge result.
+// Returns (galaConnectURL, etherscanURL) based on available transaction hashes.
+func (r *BridgeResult) GetExplorerLinks() (galaConnectURL, etherscanURL string) {
+	// For GalaChain → Ethereum bridges, SourceTxHash is the GalaChain tx
+	// For Ethereum → GalaChain bridges, SourceTxHash is the Ethereum tx
+
+	switch r.Direction {
+	case BridgeToEthereum:
+		// Source is GalaChain, destination is Ethereum
+		if r.SourceTxHash != "" {
+			galaConnectURL = GetGalaConnectURL(r.SourceTxHash)
+		}
+		if r.DestTxHash != "" {
+			etherscanURL = GetEtherscanURL(r.DestTxHash)
+		}
+	case BridgeToGalaChain:
+		// Source is Ethereum, destination is GalaChain
+		if r.SourceTxHash != "" {
+			etherscanURL = GetEtherscanURL(r.SourceTxHash)
+		}
+		if r.DestTxHash != "" {
+			galaConnectURL = GetGalaConnectURL(r.DestTxHash)
+		}
+	default:
+		// Unknown direction, try to provide links based on tx hash format
+		if r.SourceTxHash != "" {
+			if len(r.SourceTxHash) == 66 && r.SourceTxHash[:2] == "0x" {
+				etherscanURL = GetEtherscanURL(r.SourceTxHash)
+			} else {
+				galaConnectURL = GetGalaConnectURL(r.SourceTxHash)
+			}
+		}
+	}
+
+	return galaConnectURL, etherscanURL
+}

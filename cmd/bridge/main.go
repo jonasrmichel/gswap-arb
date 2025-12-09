@@ -264,6 +264,25 @@ func checkStatus(ctx context.Context, executor *bridge.BridgeExecutor, txID stri
 	if result.DestTxHash != "" {
 		fmt.Printf("Dest Tx:        %s\n", result.DestTxHash)
 	}
+
+	// Show explorer links
+	galaConnectURL, etherscanURL := result.GetExplorerLinks()
+	if galaConnectURL != "" || etherscanURL != "" {
+		fmt.Println()
+		fmt.Println("Explorer Links:")
+		if galaConnectURL != "" {
+			fmt.Printf("  GalaConnect:  %s\n", galaConnectURL)
+		}
+		if etherscanURL != "" {
+			fmt.Printf("  Etherscan:    %s\n", etherscanURL)
+		}
+	}
+
+	if result.Error != "" {
+		fmt.Println()
+		fmt.Println("Notes:")
+		fmt.Println(result.Error)
+	}
 	fmt.Println()
 }
 
@@ -367,6 +386,19 @@ func executeBridge(ctx context.Context, executor *bridge.BridgeExecutor) {
 	fmt.Printf("Estimated Time:  %s\n", result.EstimatedTime)
 	fmt.Printf("Initiated:       %s\n", result.CreatedAt.Format(time.RFC3339))
 	fmt.Printf("Duration:        %s\n", time.Since(startTime).Round(time.Millisecond))
+
+	// Show explorer links
+	galaConnectURL, etherscanURL := result.GetExplorerLinks()
+	if galaConnectURL != "" || etherscanURL != "" {
+		fmt.Println()
+		fmt.Println("Explorer Links:")
+		if galaConnectURL != "" {
+			fmt.Printf("  GalaConnect:   %s\n", galaConnectURL)
+		}
+		if etherscanURL != "" {
+			fmt.Printf("  Etherscan:     %s\n", etherscanURL)
+		}
+	}
 
 	if result.Error != "" {
 		fmt.Println()
