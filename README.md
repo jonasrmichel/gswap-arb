@@ -92,6 +92,13 @@ gswap-arb/
 git clone https://github.com/jonasrmichel/gswap-arb.git
 cd gswap-arb
 
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your credentials
+
+# Source environment variables (required before running any commands)
+source .env
+
 # Build
 go build -o gswap-arb ./cmd/bot
 
@@ -165,6 +172,9 @@ go build -o gswap-trader ./cmd/bot-trader
 The bridge CLI allows bidirectional transfers between GalaChain and Ethereum:
 
 ```bash
+# First, source your environment variables
+source .env
+
 # Build the bridge CLI
 go build -o gswap-bridge ./cmd/bridge
 
@@ -177,8 +187,8 @@ go build -o gswap-bridge ./cmd/bridge
 # Bridge 100 GALA from GalaChain to Ethereum
 ./gswap-bridge --direction to-eth --token GALA --amount 100
 
-# Bridge 50 GUSDC from Ethereum to GalaChain (requires ETH_RPC_URL)
-ETH_RPC_URL=https://eth.llamarpc.com ./gswap-bridge --direction to-gala --token GUSDC --amount 50
+# Bridge 50 GUSDC from Ethereum to GalaChain
+./gswap-bridge --direction to-gala --token GUSDC --amount 50
 
 # Check bridge transaction status
 ./gswap-bridge --status <transaction-id>
@@ -264,38 +274,48 @@ ETH_RPC_URL=https://eth.llamarpc.com ./gswap-bridge --direction to-gala --token 
 
 ### Environment Variables
 
+Copy `.env.example` to `.env`, fill in your credentials, then source it:
+
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+source .env
+```
+
+The `.env` file uses `export` statements so variables are available to all commands after sourcing:
+
 ```bash
 # Bot settings
-BOT_UPDATE_INTERVAL_MS=15000
-BOT_VERBOSE=true
-BOT_DRY_RUN=true
+export BOT_UPDATE_INTERVAL_MS=15000
+export BOT_VERBOSE=true
+export BOT_DRY_RUN=true
 
 # Arbitrage settings
-ARB_MIN_SPREAD_BPS=50
-ARB_MIN_NET_PROFIT_BPS=20
-ARB_DEFAULT_TRADE_SIZE=1000
+export ARB_MIN_SPREAD_BPS=50
+export ARB_MIN_NET_PROFIT_BPS=20
+export ARB_DEFAULT_TRADE_SIZE=1000
 
 # Exchange API keys (for trading)
-BINANCE_API_KEY=your_key
-BINANCE_SECRET=your_secret
-BINANCE_TRADING_ENABLED=false
+export BINANCE_API_KEY=your_key
+export BINANCE_SECRET=your_secret
+export BINANCE_TRADING_ENABLED=false
 
-KRAKEN_API_KEY=your_key
-KRAKEN_SECRET=your_secret
-KRAKEN_TRADING_ENABLED=false
+export KRAKEN_API_KEY=your_key
+export KRAKEN_SECRET=your_secret
+export KRAKEN_TRADING_ENABLED=false
 
 # GSwap DEX (for trading and bridging)
-GSWAP_PRIVATE_KEY=your_private_key
-GSWAP_WALLET_ADDRESS=your_wallet_address
-GSWAP_TRADING_ENABLED=false
+export GSWAP_PRIVATE_KEY=your_private_key
+export GSWAP_WALLET_ADDRESS=your_wallet_address
+export GSWAP_TRADING_ENABLED=false
 
 # Ethereum RPC (for bridging Ethereum → GalaChain)
-ETH_RPC_URL=https://eth.llamarpc.com
+export ETH_RPC_URL=https://eth.llamarpc.com
 
 # Slack notifications
-SLACK_ENABLED=true
-SLACK_API_TOKEN=xoxb-your-bot-token
-SLACK_CHANNEL=#your-channel
+export SLACK_ENABLED=true
+export SLACK_API_TOKEN=xoxb-your-bot-token
+export SLACK_CHANNEL=#your-channel
 ```
 
 ## Configuration
