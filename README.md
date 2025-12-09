@@ -22,14 +22,17 @@
 - **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges) and GSwap DEX
 - **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
 - **Cross-chain arbitrage**: Detects opportunities spanning GalaChain/Ethereum bridge with volatility-aware risk adjustment
+- **Inventory management**: Real-time balance monitoring across exchanges with drift detection
+- **Auto-rebalancing**: Automated cross-chain bridging when inventory drifts from targets
 - **WebSocket support**: Real-time price feeds for ultra-low latency detection
 - **GSwap DEX integration**: Polls GalaChain composite pool API for DEX prices
-- **Slack notifications**: Real-time alerts for opportunities and trade executions
+- **Slack notifications**: Real-time alerts for opportunities, trades, drift alerts, and rebalancing events
 - **Configurable thresholds**: Set minimum spread, profit margins, and trade sizes
 - **Multiple output formats**: Text, JSON, or CSV
 - **Dry-run mode**: Detect opportunities without executing trades (default)
-- **Safety features**: Balance checking, rate limiting, configurable trade limits
+- **Safety features**: Balance checking, rate limiting, circuit breakers, configurable trade limits
 - **Bridge CLI**: Manual bridge transfers between GalaChain and Ethereum
+- **Rebalance CLI**: Monitor balances and execute guided rebalancing operations
 
 ## Project Structure
 
@@ -235,7 +238,34 @@ go build -o gswap-bridge ./cmd/bridge
 
 **Note**: BENE uses the memecoin token class format on GalaChain, which differs from standard Gala-created tokens.
 
-### Rebalance CLI (Inventory Management)
+### Inventory Management System
+
+The bot includes a comprehensive inventory management system to track balances, detect drift, and rebalance assets across exchanges. This is essential for sustained arbitrage trading, as trades naturally cause inventory to drift from optimal allocations.
+
+#### Components
+
+| Component | Description | Phase |
+|-----------|-------------|-------|
+| **Balance Monitoring** | Real-time tracking of balances across all connected exchanges | Phase 1 |
+| **Drift Detection** | Calculates deviation from target allocations with configurable thresholds | Phase 1 |
+| **Slack Alerts** | Notifications when drift exceeds warning or critical thresholds | Phase 1 |
+| **Rebalance CLI** | Interactive tool for guided rebalancing with confirmation prompts | Phase 2 |
+| **Recommendations** | Prioritized suggestions for which assets to bridge and where | Phase 2 |
+| **Auto-Rebalancer** | Background process that automatically executes bridge operations | Phase 3 |
+| **Circuit Breaker** | Safety mechanism that pauses auto-rebalancing after failures | Phase 3 |
+
+#### Why Inventory Management Matters
+
+After executing arbitrage trades, balances naturally drift:
+- **Buy side** accumulates quote currency debt (e.g., spent USDT)
+- **Sell side** accumulates base currency surplus (e.g., excess GALA)
+
+Without rebalancing, the bot eventually runs out of capital on one side and cannot continue trading. The inventory management system solves this by:
+1. Monitoring balance drift in real-time
+2. Alerting when manual intervention is needed
+3. Optionally auto-rebalancing via the GalaChain/Ethereum bridge
+
+### Rebalance CLI (Phase 2)
 
 The rebalance CLI helps monitor exchange balances and execute cross-chain rebalancing:
 
@@ -306,7 +336,7 @@ When using `--execute`, the CLI provides an interactive flow:
 4. Prompts for confirmation before executing
 5. Optionally waits for bridge completion with `--wait`
 
-### Auto-Rebalancing (Trading Bot)
+### Auto-Rebalancing (Phase 3)
 
 The trading bot can be configured to automatically rebalance inventory when drift exceeds thresholds:
 
@@ -375,7 +405,7 @@ Or in `config.json`:
 }
 ```
 
-### Cross-Chain Arbitrage Detection
+### Cross-Chain Arbitrage Detection (Phase 4)
 
 The trading bot can detect arbitrage opportunities that span the GalaChain/Ethereum bridge, accounting for bridge costs and price volatility risk during the bridge delay.
 
@@ -474,6 +504,59 @@ Cross-chain opportunities trigger Slack notifications with:
 - Bridge cost and volatility risk breakdown
 - Risk-adjusted profit
 - Recommendation status (profitable or not after risk adjustment)
+
+### Slack Notifications
+
+The bot sends real-time Slack notifications for various events. Enable by setting `SLACK_ENABLED=true` and providing `SLACK_API_TOKEN` and `SLACK_CHANNEL`.
+
+#### Notification Types
+
+| Category | Event | Description |
+|----------|-------|-------------|
+| **Arbitrage** | Opportunity Detected | Price discrepancy found between exchanges |
+| **Arbitrage** | Trade Executed | Buy/sell orders completed (or simulated in dry-run) |
+| **Chain Arbitrage** | Multi-hop Opportunity | Profitable path across 3+ exchanges |
+| **Cross-Chain** | Bridge Opportunity | Profitable spread spanning GalaChain/Ethereum bridge |
+| **Cross-Chain** | Execution Started | Cross-chain trade initiated (staged execution) |
+| **Inventory** | Drift Alert | Balance allocation drifted beyond threshold |
+| **Inventory** | Critical Drift | Severe imbalance requiring immediate attention |
+| **Rebalancing** | Recommendation | Suggested bridge operation to restore balance |
+| **Rebalancing** | Bridge Started | Auto-rebalance bridge initiated |
+| **Rebalancing** | Bridge Completed | Bridge operation finished successfully |
+| **Rebalancing** | Bridge Failed | Bridge operation failed with error details |
+| **Safety** | Circuit Breaker Open | Auto-rebalancing paused after consecutive failures |
+| **Safety** | Circuit Breaker Closed | Auto-rebalancing resumed after cooldown |
+
+#### Example Slack Messages
+
+**Arbitrage Opportunity:**
+```
+🔔 ARBITRAGE OPPORTUNITY
+Pair: GALA/USDT
+Buy: binance @ 0.02345
+Sell: gswap @ 0.02380
+Spread: 1.49% (149 bps)
+Net Profit: 139 bps
+```
+
+**Drift Alert:**
+```
+⚠️ INVENTORY DRIFT ALERT
+Currency: GALA
+Max Drift: 25.0%
+gswap: +25.0% (surplus)
+binance: -25.0% (deficit)
+Action: Rebalancing recommended
+```
+
+**Auto-Rebalance Started:**
+```
+🔄 AUTO-REBALANCE STARTED
+Currency: GALA
+Amount: 1000.0000
+From: gswap → To: binance
+Transaction: 0x1234...abcd
+```
 
 ### Command Line Options
 
