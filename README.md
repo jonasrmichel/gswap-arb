@@ -41,8 +41,10 @@ gswap-arb/
 │   │   └── main.go           # WebSocket-based bot (real-time)
 │   ├── bot-trader/
 │   │   └── main.go           # Trading bot with execution
-│   └── bridge/
-│       └── main.go           # Bridge CLI for cross-chain transfers
+│   ├── bridge/
+│   │   └── main.go           # Bridge CLI for cross-chain transfers
+│   └── rebalance/
+│       └── main.go           # Inventory rebalancing CLI
 ├── pkg/
 │   ├── arbitrage/
 │   │   ├── detector.go       # Arbitrage detection logic
@@ -73,6 +75,9 @@ gswap-arb/
 │   ├── bridge/
 │   │   ├── types.go          # Bridge types and token configuration
 │   │   └── bridge.go         # Bridge executor implementation
+│   ├── inventory/
+│   │   ├── types.go          # Inventory tracking data structures
+│   │   └── manager.go        # Balance monitoring and drift detection
 │   ├── notifier/
 │   │   └── slack.go          # Slack notification integration
 │   ├── reporter/
@@ -226,6 +231,77 @@ go build -o gswap-bridge ./cmd/bridge
 
 **Note**: BENE uses the memecoin token class format on GalaChain, which differs from standard Gala-created tokens.
 
+### Rebalance CLI (Inventory Management)
+
+The rebalance CLI helps monitor exchange balances and execute cross-chain rebalancing:
+
+```bash
+# First, source your environment variables
+source .env
+
+# Build the rebalance CLI
+go build -o gswap-rebalance ./cmd/rebalance
+
+# Check current balances and drift status
+./gswap-rebalance --check
+
+# Generate rebalance recommendations
+./gswap-rebalance --recommend
+
+# Execute a specific rebalance (interactive confirmation)
+./gswap-rebalance --execute --token GALA --from gswap --to binance --amount 1000
+
+# Execute and wait for bridge completion
+./gswap-rebalance --execute --token GALA --from gswap --to binance --amount 1000 --wait
+
+# Set custom drift threshold (default: 20%)
+./gswap-rebalance --check --drift-threshold 15
+```
+
+#### Operation Modes
+
+| Mode | Description |
+|------|-------------|
+| `--check` | Display current balances across all exchanges and calculate drift from target allocations |
+| `--recommend` | Analyze drift and generate prioritized rebalance recommendations |
+| `--execute` | Execute a specific rebalance operation with interactive confirmation |
+
+#### Drift Detection
+
+The rebalance CLI calculates "drift" as the deviation from target balance allocations:
+
+- **Default Target**: Equal distribution across all exchanges (e.g., 50/50 for two exchanges)
+- **Drift Threshold**: Default 20% - balances outside this range trigger warnings
+- **Critical Drift**: Default 40% - severe imbalance requiring immediate attention
+
+Example output:
+```
+================================================================================
+BALANCE DRIFT STATUS
+================================================================================
+
+Currency: GALA
+  Target Allocation: gswap=50.0%, binance=50.0%
+  Current Allocation: gswap=65.0%, binance=35.0%
+
+  Drift by Exchange:
+    gswap: +15.0% (surplus)
+    binance: -15.0% (deficit)
+
+  Max Drift: 15.0%
+  Status: ⚠️  WARNING - Needs Rebalancing
+```
+
+#### Execute Mode
+
+When using `--execute`, the CLI provides an interactive flow:
+
+1. Validates token, source, and destination
+2. Displays current balances on both exchanges
+3. Shows expected balance after rebalance
+4. Prompts for confirmation before executing
+5. Optionally waits for bridge completion with `--wait`
+
 ### Command Line Options
 
 #### REST API Bot (`./cmd/bot`)
@@ -271,6 +347,23 @@ go build -o gswap-bridge ./cmd/bridge
 | `--list` | `false` | List supported tokens |
 | `--private-key` | - | Wallet private key (or use `GSWAP_PRIVATE_KEY` env var) |
 | `--eth-rpc` | - | Ethereum RPC URL (or use `ETH_RPC_URL` env var) - required for `to-gala` |
+
+#### Rebalance CLI (`./cmd/rebalance`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--check` | `false` | Check current balances and drift status |
+| `--recommend` | `false` | Generate rebalance recommendations |
+| `--execute` | `false` | Execute a rebalance operation |
+| `--token` | - | Token to rebalance (required for execute) |
+| `--from` | - | Source exchange (required for execute) |
+| `--to` | - | Destination exchange (required for execute) |
+| `--amount` | - | Amount to transfer (required for execute) |
+| `--wait` | `false` | Wait for bridge completion |
+| `--max-wait` | `10m` | Maximum time to wait for bridge |
+| `--drift-threshold` | `20` | Drift threshold percentage |
+| `--private-key` | - | Wallet private key (or use `GSWAP_PRIVATE_KEY` env var) |
+| `--eth-rpc` | - | Ethereum RPC URL (or use `ETH_RPC_URL` env var) |
 
 ### Environment Variables
 
@@ -610,6 +703,9 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] CCXT integration for unified CEX support (10+ exchanges)
 - [x] Slack notifications for opportunities and trades
 - [x] Bridge CLI for GalaChain ↔ Ethereum transfers
+- [x] Inventory monitoring and drift detection
+- [x] Semi-automated rebalancing CLI
+- [ ] Automated rebalancing based on drift thresholds
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades
