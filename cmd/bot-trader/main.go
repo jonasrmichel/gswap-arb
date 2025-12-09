@@ -14,6 +14,7 @@ import (
 
 	"github.com/jonasrmichel/gswap-arb/pkg/config"
 	"github.com/jonasrmichel/gswap-arb/pkg/executor"
+	"github.com/jonasrmichel/gswap-arb/pkg/inventory"
 	"github.com/jonasrmichel/gswap-arb/pkg/notifier"
 	"github.com/jonasrmichel/gswap-arb/pkg/providers/websocket"
 	"github.com/jonasrmichel/gswap-arb/pkg/reporter"
@@ -21,12 +22,14 @@ import (
 )
 
 var (
-	configPath   = flag.String("config", "", "Path to configuration file (JSON)")
-	outputFormat = flag.String("format", "text", "Output format: text, json, csv")
-	verbose      = flag.Bool("verbose", true, "Enable verbose output")
-	dryRun       = flag.Bool("dry-run", true, "Dry run mode (default: true for safety)")
-	maxTradeSize = flag.Float64("max-trade", 10.0, "Maximum trade size in quote currency")
-	minProfit    = flag.Int("min-profit", 20, "Minimum profit in basis points")
+	configPath       = flag.String("config", "", "Path to configuration file (JSON)")
+	outputFormat     = flag.String("format", "text", "Output format: text, json, csv")
+	verbose          = flag.Bool("verbose", true, "Enable verbose output")
+	dryRun           = flag.Bool("dry-run", true, "Dry run mode (default: true for safety)")
+	maxTradeSize     = flag.Float64("max-trade", 10.0, "Maximum trade size in quote currency")
+	minProfit        = flag.Int("min-profit", 20, "Minimum profit in basis points")
+	inventoryCheck   = flag.Bool("inventory", true, "Enable inventory monitoring")
+	driftThreshold   = flag.Float64("drift-threshold", 20.0, "Drift threshold percentage for alerts")
 )
 
 func main() {
@@ -126,6 +129,64 @@ func main() {
 		if err := slackNotifier.SendTestMessage(); err != nil {
 			fmt.Printf("Warning: Failed to send Slack test message: %v\n", err)
 		}
+	}
+
+	// Create inventory manager for balance monitoring
+	var invManager *inventory.Manager
+	if *inventoryCheck {
+		invConfig := inventory.DefaultInventoryConfig()
+		invConfig.DriftThresholdPct = *driftThreshold
+		invConfig.AlertOnDrift = true
+
+		invManager = inventory.NewManager(registry, invConfig)
+
+		// Set up drift alert callback
+		invManager.SetDriftAlertCallback(func(status *inventory.DriftStatus) {
+			if *verbose {
+				fmt.Printf("\n[DRIFT ALERT] %s: %.1f%% drift detected\n", status.Currency, status.MaxDriftPct)
+			}
+
+			// Send Slack notification
+			alert := &notifier.DriftAlert{
+				Currency:       status.Currency,
+				MaxDriftPct:    status.MaxDriftPct,
+				ExchangeDrifts: status.DriftPct,
+				IsCritical:     status.MaxDriftPct >= invConfig.CriticalDriftPct,
+			}
+			if err := slackNotifier.NotifyDriftAlert(alert); err != nil {
+				fmt.Printf("  [SLACK ERROR] %v\n", err)
+			}
+		})
+
+		// Set up rebalance recommendation callback
+		invManager.SetRebalanceCallback(func(rec *inventory.RebalanceRecommendation) {
+			if *verbose {
+				fmt.Printf("\n[REBALANCE] %s: Bridge %s from %s to %s\n",
+					rec.Currency, rec.Amount.Text('f', 4), rec.FromExchange, rec.ToExchange)
+			}
+
+			// Send Slack notification
+			priority := "LOW"
+			if rec.Priority == inventory.PriorityHigh {
+				priority = "HIGH"
+			} else if rec.Priority == inventory.PriorityMedium {
+				priority = "MEDIUM"
+			}
+
+			slackRec := &notifier.RebalanceRecommendation{
+				Currency:     rec.Currency,
+				FromExchange: rec.FromExchange,
+				ToExchange:   rec.ToExchange,
+				Amount:       rec.Amount.Text('f', 4),
+				Priority:     priority,
+				Reason:       rec.Reason,
+			}
+			if err := slackNotifier.NotifyRebalanceRecommendation(slackRec); err != nil {
+				fmt.Printf("  [SLACK ERROR] %v\n", err)
+			}
+		})
+
+		fmt.Printf("Inventory monitoring enabled (drift threshold: %.1f%%)\n", *driftThreshold)
 	}
 
 	// Set up arbitrage callback with execution
@@ -249,6 +310,24 @@ func main() {
 	statusTicker := time.NewTicker(60 * time.Second)
 	defer statusTicker.Stop()
 
+	// Inventory check ticker (every 5 minutes)
+	var inventoryTicker *time.Ticker
+	if invManager != nil {
+		inventoryTicker = time.NewTicker(5 * time.Minute)
+		defer inventoryTicker.Stop()
+
+		// Do initial inventory snapshot
+		go func() {
+			time.Sleep(5 * time.Second) // Wait for executors to be ready
+			if _, err := invManager.CollectSnapshot(ctx); err != nil {
+				fmt.Printf("Warning: Initial inventory snapshot failed: %v\n", err)
+			} else if *verbose {
+				fmt.Println("\nInitial inventory snapshot collected")
+				fmt.Println(invManager.FormatSnapshotReport())
+			}
+		}()
+	}
+
 	// Main loop
 	for {
 		select {
@@ -256,6 +335,12 @@ func main() {
 			// Print final stats
 			rep.PrintStats()
 			printExecutionStats(coordinator)
+
+			// Print final inventory status
+			if invManager != nil {
+				fmt.Println("\nFinal Inventory Status:")
+				fmt.Println(invManager.FormatDriftReport())
+			}
 
 			// Stop aggregator
 			aggregator.Stop()
@@ -267,7 +352,28 @@ func main() {
 			return
 
 		case <-statusTicker.C:
-			printStatus(aggregator, coordinator, rep)
+			printStatus(aggregator, coordinator, rep, invManager)
+
+		case <-func() <-chan time.Time {
+			if inventoryTicker != nil {
+				return inventoryTicker.C
+			}
+			return make(chan time.Time) // Never fires if nil
+		}():
+			// Periodic inventory check
+			if invManager != nil {
+				if _, err := invManager.CollectSnapshot(ctx); err != nil {
+					fmt.Printf("Warning: Inventory snapshot failed: %v\n", err)
+				} else {
+					// Check drift and generate recommendations
+					invManager.CheckDrift(ctx)
+					recommendations := invManager.GenerateRebalanceRecommendations()
+
+					if *verbose && len(recommendations) > 0 {
+						fmt.Println(invManager.FormatRecommendationsReport(recommendations))
+					}
+				}
+			}
 		}
 	}
 }
@@ -412,7 +518,7 @@ func getPairs(cfg *config.Config) []string {
 }
 
 // printStatus prints current status.
-func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordinator, rep *reporter.Reporter) {
+func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordinator, rep *reporter.Reporter, invManager *inventory.Manager) {
 	stats := rep.GetStats()
 	execStats := coord.GetStats()
 
@@ -439,6 +545,25 @@ func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordi
 		parts = append(parts, fmt.Sprintf("%s=%s", name, state))
 	}
 	fmt.Println(strings.Join(parts, ", "))
+
+	// Inventory status
+	if invManager != nil {
+		invStats := invManager.GetStats()
+		driftStatus := invManager.GetDriftStatus()
+
+		driftWarnings := 0
+		for _, ds := range driftStatus {
+			if ds.NeedsRebalance {
+				driftWarnings++
+			}
+		}
+
+		fmt.Printf("  Inventory: %d snapshots, %d drift alerts, %d rebalances recommended\n",
+			invStats.SnapshotsCollected, invStats.DriftAlertsTriggered, invStats.RebalancesRecommended)
+		if driftWarnings > 0 {
+			fmt.Printf("  [!] %d currencies with drift above threshold\n", driftWarnings)
+		}
+	}
 
 	fmt.Println(strings.Repeat("-", 60))
 	fmt.Println()

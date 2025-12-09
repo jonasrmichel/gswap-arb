@@ -302,3 +302,198 @@ func (s *SlackNotifier) SendTestMessage() error {
 
 	return s.sendMessage(blocks, "GSwap Arbitrage Bot connected")
 }
+
+// DriftAlert represents a balance drift alert for notification.
+type DriftAlert struct {
+	Currency       string
+	MaxDriftPct    float64
+	ExchangeDrifts map[string]float64 // exchange -> drift percentage
+	IsCritical     bool
+}
+
+// NotifyDriftAlert sends a notification about balance drift.
+func (s *SlackNotifier) NotifyDriftAlert(alert *DriftAlert) error {
+	if !s.enabled || alert == nil {
+		return nil
+	}
+
+	emoji := "⚠️"
+	severity := "WARNING"
+	if alert.IsCritical {
+		emoji = "🚨"
+		severity = "CRITICAL"
+	}
+
+	// Build drift details
+	driftDetails := ""
+	for exchange, drift := range alert.ExchangeDrifts {
+		indicator := ""
+		if drift > 0 {
+			indicator = "↑ surplus"
+		} else if drift < 0 {
+			indicator = "↓ deficit"
+		}
+		driftDetails += fmt.Sprintf("• %s: %+.1f%% %s\n", exchange, drift, indicator)
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s Balance Drift %s: %s", emoji, severity, alert.Currency),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currency:*\n%s", alert.Currency)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Max Drift:*\n%.1f%%", alert.MaxDriftPct)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Drift by Exchange:*\n%s", driftDetails),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Detected at %s | Consider rebalancing inventory", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Balance Drift %s: %s at %.1f%%", severity, alert.Currency, alert.MaxDriftPct))
+}
+
+// RebalanceRecommendation represents a rebalance recommendation for notification.
+type RebalanceRecommendation struct {
+	Currency     string
+	FromExchange string
+	ToExchange   string
+	Amount       string
+	Priority     string // "HIGH", "MEDIUM", "LOW"
+	Reason       string
+}
+
+// NotifyRebalanceRecommendation sends a notification about a rebalance recommendation.
+func (s *SlackNotifier) NotifyRebalanceRecommendation(rec *RebalanceRecommendation) error {
+	if !s.enabled || rec == nil {
+		return nil
+	}
+
+	emoji := "💡"
+	if rec.Priority == "HIGH" {
+		emoji = "🔴"
+	} else if rec.Priority == "MEDIUM" {
+		emoji = "🟡"
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s Rebalance Recommendation [%s]", emoji, rec.Priority),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currency:*\n%s", rec.Currency)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Amount:*\n%s", rec.Amount)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*From:*\n%s", rec.FromExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*To:*\n%s", rec.ToExchange)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Reason:* %s", rec.Reason),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Generated at %s | Use bridge CLI to execute", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Rebalance: Bridge %s %s from %s to %s", rec.Amount, rec.Currency, rec.FromExchange, rec.ToExchange))
+}
+
+// InventorySummary represents a periodic inventory summary for notification.
+type InventorySummary struct {
+	TotalExchanges    int
+	TotalCurrencies   int
+	DriftWarnings     int
+	CriticalDrifts    int
+	TopDrifts         []string // "GALA: 25.3% on binance"
+}
+
+// NotifyInventorySummary sends a periodic inventory status summary.
+func (s *SlackNotifier) NotifyInventorySummary(summary *InventorySummary) error {
+	if !s.enabled || summary == nil {
+		return nil
+	}
+
+	statusEmoji := "✅"
+	statusText := "Healthy"
+	if summary.CriticalDrifts > 0 {
+		statusEmoji = "🚨"
+		statusText = "Critical"
+	} else if summary.DriftWarnings > 0 {
+		statusEmoji = "⚠️"
+		statusText = "Needs Attention"
+	}
+
+	driftText := "No significant drift detected"
+	if len(summary.TopDrifts) > 0 {
+		driftText = ""
+		for _, d := range summary.TopDrifts {
+			driftText += fmt.Sprintf("• %s\n", d)
+		}
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s Inventory Status: %s", statusEmoji, statusText),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Exchanges:*\n%d", summary.TotalExchanges)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Currencies:*\n%d", summary.TotalCurrencies)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Drift Warnings:*\n%d", summary.DriftWarnings)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Critical:*\n%d", summary.CriticalDrifts)},
+			},
+		},
+		{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Top Drifts:*\n%s", driftText),
+			},
+		},
+		{
+			Type: "context",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("Report generated at %s", time.Now().Format(time.RFC3339)),
+			},
+		},
+	}
+
+	return s.sendMessage(blocks, fmt.Sprintf("Inventory Status: %s - %d warnings, %d critical", statusText, summary.DriftWarnings, summary.CriticalDrifts))
+}

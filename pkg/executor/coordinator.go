@@ -23,6 +23,22 @@ type ArbitrageCoordinator struct {
 	// Rate limiting
 	lastExecution time.Time
 	executionMu   sync.Mutex
+
+	// Balance drift tracking
+	balanceChanges []BalanceChange
+	balanceChangesMu sync.RWMutex
+
+	// Callbacks for inventory tracking
+	onTradeComplete func(execution *ArbitrageExecution)
+}
+
+// BalanceChange records a balance change from a trade execution.
+type BalanceChange struct {
+	Exchange    string     `json:"exchange"`
+	Currency    string     `json:"currency"`
+	AmountDelta *big.Float `json:"amount_delta"` // Positive = increase, negative = decrease
+	TradeID     string     `json:"trade_id"`
+	Timestamp   time.Time  `json:"timestamp"`
 }
 
 // CoordinatorConfig holds configuration for the arbitrage coordinator.
@@ -295,6 +311,14 @@ func (c *ArbitrageCoordinator) ExecuteOpportunity(ctx context.Context, opp *type
 	c.stats.LastExecutionTime = time.Now()
 	c.statsMu.Unlock()
 
+	// Record balance changes for drift tracking
+	c.recordBalanceChanges(execution)
+
+	// Trigger callback for inventory tracking
+	if c.onTradeComplete != nil {
+		c.onTradeComplete(execution)
+	}
+
 	return execution, nil
 }
 
@@ -413,6 +437,133 @@ func (c *ArbitrageCoordinator) SetDryRun(dryRun bool) {
 // IsDryRun returns whether dry run mode is enabled.
 func (c *ArbitrageCoordinator) IsDryRun() bool {
 	return c.config.DryRun
+}
+
+// SetTradeCompleteCallback sets a callback to be called after each trade execution.
+// This is used for inventory tracking and drift monitoring.
+func (c *ArbitrageCoordinator) SetTradeCompleteCallback(cb func(execution *ArbitrageExecution)) {
+	c.onTradeComplete = cb
+}
+
+// recordBalanceChanges records the balance changes from a successful arbitrage execution.
+func (c *ArbitrageCoordinator) recordBalanceChanges(execution *ArbitrageExecution) {
+	if execution == nil || !execution.Success || execution.DryRun {
+		return
+	}
+
+	opp := execution.Opportunity
+	if opp == nil {
+		return
+	}
+
+	// Parse pair to get currencies
+	baseCurrency, quoteCurrency, err := parsePair(opp.Pair)
+	if err != nil {
+		return
+	}
+
+	c.balanceChangesMu.Lock()
+	defer c.balanceChangesMu.Unlock()
+
+	now := time.Now()
+
+	// Buy side: spent quote currency, gained base currency
+	if execution.BuyTrade != nil && execution.BuyTrade.Success && execution.BuyTrade.Order != nil {
+		buyOrder := execution.BuyTrade.Order
+
+		// Quote currency decreased on buy exchange
+		if buyOrder.AveragePrice != nil && buyOrder.FilledAmount != nil {
+			quoteSpent := new(big.Float).Mul(buyOrder.AveragePrice, buyOrder.FilledAmount)
+			c.balanceChanges = append(c.balanceChanges, BalanceChange{
+				Exchange:    opp.BuyExchange,
+				Currency:    quoteCurrency,
+				AmountDelta: new(big.Float).Neg(quoteSpent),
+				TradeID:     execution.ID,
+				Timestamp:   now,
+			})
+		}
+
+		// Base currency increased on buy exchange
+		if buyOrder.FilledAmount != nil {
+			c.balanceChanges = append(c.balanceChanges, BalanceChange{
+				Exchange:    opp.BuyExchange,
+				Currency:    baseCurrency,
+				AmountDelta: buyOrder.FilledAmount,
+				TradeID:     execution.ID,
+				Timestamp:   now,
+			})
+		}
+	}
+
+	// Sell side: gained quote currency, spent base currency
+	if execution.SellTrade != nil && execution.SellTrade.Success && execution.SellTrade.Order != nil {
+		sellOrder := execution.SellTrade.Order
+
+		// Quote currency increased on sell exchange
+		if sellOrder.AveragePrice != nil && sellOrder.FilledAmount != nil {
+			quoteGained := new(big.Float).Mul(sellOrder.AveragePrice, sellOrder.FilledAmount)
+			c.balanceChanges = append(c.balanceChanges, BalanceChange{
+				Exchange:    opp.SellExchange,
+				Currency:    quoteCurrency,
+				AmountDelta: quoteGained,
+				TradeID:     execution.ID,
+				Timestamp:   now,
+			})
+		}
+
+		// Base currency decreased on sell exchange
+		if sellOrder.FilledAmount != nil {
+			c.balanceChanges = append(c.balanceChanges, BalanceChange{
+				Exchange:    opp.SellExchange,
+				Currency:    baseCurrency,
+				AmountDelta: new(big.Float).Neg(sellOrder.FilledAmount),
+				TradeID:     execution.ID,
+				Timestamp:   now,
+			})
+		}
+	}
+
+	// Keep only last 1000 balance changes to avoid memory issues
+	if len(c.balanceChanges) > 1000 {
+		c.balanceChanges = c.balanceChanges[len(c.balanceChanges)-1000:]
+	}
+}
+
+// GetBalanceChanges returns recorded balance changes since a given time.
+func (c *ArbitrageCoordinator) GetBalanceChanges(since time.Time) []BalanceChange {
+	c.balanceChangesMu.RLock()
+	defer c.balanceChangesMu.RUnlock()
+
+	result := make([]BalanceChange, 0)
+	for _, change := range c.balanceChanges {
+		if change.Timestamp.After(since) {
+			result = append(result, change)
+		}
+	}
+	return result
+}
+
+// GetNetBalanceChanges calculates net balance changes per exchange/currency since a given time.
+func (c *ArbitrageCoordinator) GetNetBalanceChanges(since time.Time) map[string]map[string]*big.Float {
+	changes := c.GetBalanceChanges(since)
+
+	// exchange -> currency -> net change
+	result := make(map[string]map[string]*big.Float)
+
+	for _, change := range changes {
+		if _, ok := result[change.Exchange]; !ok {
+			result[change.Exchange] = make(map[string]*big.Float)
+		}
+		if _, ok := result[change.Exchange][change.Currency]; !ok {
+			result[change.Exchange][change.Currency] = big.NewFloat(0)
+		}
+		result[change.Exchange][change.Currency] = new(big.Float).Add(
+			result[change.Exchange][change.Currency],
+			change.AmountDelta,
+		)
+	}
+
+	return result
 }
 
 // Helper functions
