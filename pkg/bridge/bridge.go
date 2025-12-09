@@ -888,15 +888,98 @@ func (b *BridgeExecutor) Bridge(ctx context.Context, req *BridgeRequest) (*Bridg
 }
 
 // GetBridgeStatus checks the status of a bridge transaction.
+// For Ethereum transaction hashes (0x...), it checks the transaction on Ethereum.
+// For GalaChain bridge request IDs, it queries the GalaConnect API.
 func (b *BridgeExecutor) GetBridgeStatus(ctx context.Context, txID string) (*BridgeResult, error) {
-	// Query GalaChain for transaction status
-	url := fmt.Sprintf("https://api-galachain-prod.gala.com/transaction/%s", txID)
+	// Check if this is an Ethereum transaction hash
+	if strings.HasPrefix(txID, "0x") && len(txID) == 66 {
+		return b.getEthereumTxStatus(ctx, txID)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	// Otherwise, treat as GalaChain bridge request ID
+	return b.getGalaChainBridgeStatus(ctx, txID)
+}
+
+// getEthereumTxStatus checks the status of an Ethereum transaction.
+func (b *BridgeExecutor) getEthereumTxStatus(ctx context.Context, txHash string) (*BridgeResult, error) {
+	if b.ethRPCURL == "" {
+		return nil, fmt.Errorf("Ethereum RPC URL not configured (set ETH_RPC_URL)")
+	}
+
+	client, err := ethclient.DialContext(ctx, b.ethRPCURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
+	}
+	defer client.Close()
+
+	hash := common.HexToHash(txHash)
+
+	// Get transaction receipt
+	receipt, err := client.TransactionReceipt(ctx, hash)
+	if err != nil {
+		// Transaction not yet mined or not found
+		return &BridgeResult{
+			TransactionID: txHash,
+			Status:        BridgeStatusPending,
+			SourceTxHash:  txHash,
+			Error:         "Transaction not yet confirmed or not found",
+		}, nil
+	}
+
+	// Determine status from receipt
+	var status BridgeStatus
+	if receipt.Status == types.ReceiptStatusSuccessful {
+		status = BridgeStatusCompleted
+	} else {
+		status = BridgeStatusFailed
+	}
+
+	// Try to get the transaction details for more info
+	tx, _, err := client.TransactionByHash(ctx, hash)
+	if err != nil {
+		return &BridgeResult{
+			TransactionID: txHash,
+			Status:        status,
+			SourceTxHash:  txHash,
+		}, nil
+	}
+
+	// Check if this is a bridge transaction (to the bridge contract)
+	bridgeAddr := common.HexToAddress(ethereumBridgeAddress)
+	direction := BridgeToGalaChain
+	if tx.To() != nil && *tx.To() == bridgeAddr {
+		direction = BridgeToGalaChain
+	}
+
+	return &BridgeResult{
+		TransactionID: txHash,
+		Status:        status,
+		Direction:     direction,
+		SourceTxHash:  txHash,
+	}, nil
+}
+
+// getGalaChainBridgeStatus checks the status of a GalaChain bridge request.
+func (b *BridgeExecutor) getGalaChainBridgeStatus(ctx context.Context, bridgeRequestID string) (*BridgeResult, error) {
+	// Query GalaConnect API for bridge request status
+	// The endpoint is /v1/bridge/status/{bridgeRequestId}
+	url := galaConnectAPI + "/v1/bridge/status"
+
+	reqBody := map[string]interface{}{
+		"bridgeRequestId": bridgeRequestID,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Wallet-Address", b.galaChainAddress)
 
 	resp, err := b.client.Do(req)
 	if err != nil {
@@ -910,43 +993,63 @@ func (b *BridgeExecutor) GetBridgeStatus(ctx context.Context, txID string) (*Bri
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		// If the status endpoint doesn't work, provide a helpful message
+		return &BridgeResult{
+			TransactionID: bridgeRequestID,
+			Status:        BridgeStatusPending,
+			Direction:     BridgeToEthereum,
+			Error: fmt.Sprintf("Bridge status lookup returned %d. "+
+				"GalaChain→Ethereum bridges typically complete in 10-30 minutes. "+
+				"Check your Ethereum wallet for incoming tokens.", resp.StatusCode),
+		}, nil
 	}
 
-	var txResp struct {
-		ID     string `json:"id"`
+	var statusResp struct {
 		Status string `json:"status"`
 		Data   struct {
-			Token  string `json:"token"`
-			Amount string `json:"amount"`
-		} `json:"data"`
+			BridgeRequestID string `json:"bridgeRequestId"`
+			Status          string `json:"status"`
+			Token           string `json:"token"`
+			Amount          string `json:"amount"`
+			DestTxHash      string `json:"destinationTxHash"`
+		} `json:"Data"`
 	}
 
-	if err := json.Unmarshal(body, &txResp); err != nil {
+	if err := json.Unmarshal(body, &statusResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	// Determine status
 	var status BridgeStatus
-	switch strings.ToLower(txResp.Status) {
-	case "confirmed", "success", "completed":
+	statusStr := statusResp.Status
+	if statusStr == "" {
+		statusStr = statusResp.Data.Status
+	}
+
+	switch strings.ToLower(statusStr) {
+	case "confirmed", "success", "completed", "complete":
 		status = BridgeStatusCompleted
-	case "pending":
+	case "pending", "processing", "in_progress":
 		status = BridgeStatusPending
-	case "failed":
+	case "failed", "error":
 		status = BridgeStatusFailed
 	default:
 		status = BridgeStatusPending
 	}
 
 	amount := new(big.Float)
-	amount.SetString(txResp.Data.Amount)
+	if statusResp.Data.Amount != "" {
+		amount.SetString(statusResp.Data.Amount)
+	}
 
 	return &BridgeResult{
-		TransactionID: txID,
-		Token:         txResp.Data.Token,
+		TransactionID: bridgeRequestID,
+		Token:         statusResp.Data.Token,
 		Amount:        amount,
 		Status:        status,
-		SourceTxHash:  txID,
+		Direction:     BridgeToEthereum,
+		SourceTxHash:  bridgeRequestID,
+		DestTxHash:    statusResp.Data.DestTxHash,
 	}, nil
 }
 
