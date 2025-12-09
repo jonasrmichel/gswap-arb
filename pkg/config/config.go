@@ -22,6 +22,9 @@ type Config struct {
 	// Arbitrage settings
 	Arbitrage ArbitrageSettings `json:"arbitrage"`
 
+	// Cross-chain arbitrage settings
+	CrossChainArbitrage CrossChainArbitrageSettings `json:"cross_chain_arbitrage"`
+
 	// Rebalancing settings
 	Rebalancing RebalancingSettings `json:"rebalancing"`
 
@@ -110,6 +113,53 @@ type ArbitrageSettings struct {
 	QuoteValiditySecs int     `json:"quote_validity_secs"`
 }
 
+// CrossChainArbitrageSettings holds cross-chain arbitrage configuration.
+type CrossChainArbitrageSettings struct {
+	// Enable/disable
+	Enabled bool `json:"enabled"` // Enable cross-chain arbitrage detection
+
+	// Profit thresholds
+	MinSpreadPercent         float64 `json:"min_spread_percent"`           // Minimum spread % before considering (default: 3.0)
+	MinRiskAdjustedProfitBps int     `json:"min_risk_adjusted_profit_bps"` // Minimum risk-adjusted profit (default: 100)
+
+	// Bridge parameters
+	MaxBridgeTimeMinutes int `json:"max_bridge_time_minutes"` // Maximum acceptable bridge time (default: 30)
+	BridgeTimeToEthMin   int `json:"bridge_time_to_eth_min"`  // Estimated bridge time to Ethereum (default: 15)
+	BridgeTimeToGalaMin  int `json:"bridge_time_to_gala_min"` // Estimated bridge time to GalaChain (default: 15)
+
+	// Volatility settings
+	VolatilityWindowMinutes  int     `json:"volatility_window_minutes"`   // Window for volatility calculation (default: 60)
+	VolatilityBufferPercent  float64 `json:"volatility_buffer_percent"`   // Additional buffer for volatility risk (default: 2.0)
+	DefaultVolatilityBps     int     `json:"default_volatility_bps"`      // Default volatility when insufficient data (default: 200)
+	ConfidenceMultiplier     float64 `json:"confidence_multiplier"`       // Multiplier for risk calculation (default: 2.0)
+
+	// Execution settings
+	AutoExecute         bool     `json:"auto_execute"`          // Automatically execute cross-chain opportunities
+	RequireConfirmation bool     `json:"require_confirmation"`  // Require user confirmation before execution
+	AllowedTokens       []string `json:"allowed_tokens"`        // Tokens allowed for cross-chain arb (empty = all bridgeable)
+	ExecutionStrategy   string   `json:"execution_strategy"`    // "immediate", "staged", or "hedged"
+}
+
+// DefaultCrossChainArbitrageSettings returns sensible defaults.
+func DefaultCrossChainArbitrageSettings() CrossChainArbitrageSettings {
+	return CrossChainArbitrageSettings{
+		Enabled:                  false, // Disabled by default for safety
+		MinSpreadPercent:         3.0,   // 3% minimum spread
+		MinRiskAdjustedProfitBps: 100,   // 1% minimum risk-adjusted profit
+		MaxBridgeTimeMinutes:     30,
+		BridgeTimeToEthMin:       15,
+		BridgeTimeToGalaMin:      15,
+		VolatilityWindowMinutes:  60,
+		VolatilityBufferPercent:  2.0,
+		DefaultVolatilityBps:     200,
+		ConfidenceMultiplier:     2.0,
+		AutoExecute:              false,
+		RequireConfirmation:      true,
+		AllowedTokens:            []string{"GALA", "GUSDT", "GUSDC"},
+		ExecutionStrategy:        "staged", // Default to staged execution
+	}
+}
+
 // ExchangeSettings holds configuration for a single exchange.
 type ExchangeSettings struct {
 	ID       string `json:"id"`
@@ -165,6 +215,8 @@ func DefaultConfig() *Config {
 		},
 
 		Rebalancing: DefaultRebalancingSettings(),
+
+		CrossChainArbitrage: DefaultCrossChainArbitrageSettings(),
 
 		Exchanges: []ExchangeSettings{
 			{ID: "gswap", Name: "GSwap", Type: "dex", Enabled: true},
@@ -261,6 +313,27 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("SLACK_CHANNEL"); v != "" {
 		c.Slack.Channel = v
+	}
+
+	// Cross-chain arbitrage settings
+	if v := os.Getenv("CROSS_CHAIN_ARB_ENABLED"); v != "" {
+		c.CrossChainArbitrage.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("CROSS_CHAIN_ARB_MIN_SPREAD_PERCENT"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.CrossChainArbitrage.MinSpreadPercent = val
+		}
+	}
+	if v := os.Getenv("CROSS_CHAIN_ARB_MIN_PROFIT_BPS"); v != "" {
+		if val, err := parseInt(v); err == nil {
+			c.CrossChainArbitrage.MinRiskAdjustedProfitBps = val
+		}
+	}
+	if v := os.Getenv("CROSS_CHAIN_ARB_AUTO_EXECUTE"); v != "" {
+		c.CrossChainArbitrage.AutoExecute = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("CROSS_CHAIN_ARB_EXECUTION_STRATEGY"); v != "" {
+		c.CrossChainArbitrage.ExecutionStrategy = v
 	}
 
 	// Rebalancing settings

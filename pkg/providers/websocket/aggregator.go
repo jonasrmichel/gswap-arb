@@ -22,9 +22,10 @@ type PriceAggregator struct {
 	pricesMu sync.RWMutex
 
 	// Callbacks
-	onPriceUpdate     func(update *PriceUpdate)
-	onArbitrage       func(opp *types.ArbitrageOpportunity)
-	onChainArbitrage  func(opp *types.ChainArbitrageOpportunity)
+	onPriceUpdate       func(update *PriceUpdate)
+	onArbitrage         func(opp *types.ArbitrageOpportunity)
+	onChainArbitrage    func(opp *types.ChainArbitrageOpportunity)
+	onCrossChainCheck   func(pair string, prices map[string]*arbitrage.ExchangePrice, tradeSize *big.Float)
 
 	// Configuration
 	minSpreadBps    int
@@ -133,6 +134,13 @@ func (a *PriceAggregator) OnArbitrage(callback func(opp *types.ArbitrageOpportun
 // OnChainArbitrage sets the callback for detected chain arbitrage opportunities.
 func (a *PriceAggregator) OnChainArbitrage(callback func(opp *types.ChainArbitrageOpportunity)) {
 	a.onChainArbitrage = callback
+}
+
+// OnCrossChainCheck sets the callback for cross-chain arbitrage checks.
+// This callback is invoked with the current prices during each arbitrage check,
+// allowing external components (like CrossChainArbitrageDetector) to analyze opportunities.
+func (a *PriceAggregator) OnCrossChainCheck(callback func(pair string, prices map[string]*arbitrage.ExchangePrice, tradeSize *big.Float)) {
+	a.onCrossChainCheck = callback
 }
 
 // Start starts the aggregator and connects all providers.
@@ -406,6 +414,12 @@ func (a *PriceAggregator) checkChainArbitrage(pair string, prices map[string]*Pr
 		if opp.IsValid {
 			a.onChainArbitrage(opp)
 		}
+	}
+
+	// Invoke cross-chain check callback if set
+	// This allows external cross-chain arbitrage detectors to analyze the same prices
+	if a.onCrossChainCheck != nil {
+		a.onCrossChainCheck(pair, exchangePrices, a.defaultTradeSize)
 	}
 }
 

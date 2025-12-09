@@ -21,6 +21,7 @@
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
 - **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges) and GSwap DEX
 - **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
+- **Cross-chain arbitrage**: Detects opportunities spanning GalaChain/Ethereum bridge with volatility-aware risk adjustment
 - **WebSocket support**: Real-time price feeds for ultra-low latency detection
 - **GSwap DEX integration**: Polls GalaChain composite pool API for DEX prices
 - **Slack notifications**: Real-time alerts for opportunities and trade executions
@@ -48,7 +49,9 @@ gswap-arb/
 ├── pkg/
 │   ├── arbitrage/
 │   │   ├── detector.go       # Arbitrage detection logic
-│   │   └── chain.go          # Multi-hop chain arbitrage
+│   │   ├── chain.go          # Multi-hop chain arbitrage
+│   │   ├── crosschain.go     # Cross-chain arbitrage with bridge support
+│   │   └── volatility.go     # Price volatility model for risk assessment
 │   ├── config/
 │   │   └── config.go         # Configuration management
 │   ├── executor/
@@ -372,6 +375,106 @@ Or in `config.json`:
 }
 ```
 
+### Cross-Chain Arbitrage Detection
+
+The trading bot can detect arbitrage opportunities that span the GalaChain/Ethereum bridge, accounting for bridge costs and price volatility risk during the bridge delay.
+
+```bash
+# Enable cross-chain arbitrage detection
+./gswap-trader --cross-chain
+
+# With custom minimum spread threshold
+./gswap-trader --cross-chain --cross-chain-min-spread 3.5
+```
+
+#### How Cross-Chain Arbitrage Works
+
+Cross-chain arbitrage opportunities arise when:
+1. A token is trading at different prices on GSwap (GalaChain DEX) vs CEXs (Ethereum side)
+2. The price spread is large enough to cover bridge costs and volatility risk
+
+**Example flow**: Buy GALA on GSwap (cheaper) → Bridge to Ethereum → Sell on Binance (higher price)
+
+#### Risk-Adjusted Profit Calculation
+
+The detector calculates risk-adjusted profit by accounting for:
+
+| Factor | Description | Typical Range |
+|--------|-------------|---------------|
+| **Gross Spread** | Raw price difference between exchanges | 0-10% |
+| **Bridge Cost** | Gas fees, bridge fees, and slippage | 40-75 bps |
+| **Volatility Risk** | Price movement risk during bridge time | 50-200 bps |
+| **Risk-Adjusted Profit** | Gross spread - bridge cost - volatility risk | Min 100 bps |
+
+The volatility risk scales with the square root of bridge time, using historical price volatility data.
+
+#### Configuration
+
+Cross-chain arbitrage can be configured via environment variables:
+
+```bash
+# Enable cross-chain arbitrage detection
+export CROSS_CHAIN_ARB_ENABLED=true
+
+# Minimum spread required (percentage)
+export CROSS_CHAIN_MIN_SPREAD_PCT=3.0
+
+# Minimum risk-adjusted profit (basis points)
+export CROSS_CHAIN_MIN_RISK_ADJ_PROFIT_BPS=100
+
+# Bridge time estimates (minutes)
+export CROSS_CHAIN_BRIDGE_TIME_TO_ETH=15
+export CROSS_CHAIN_BRIDGE_TIME_TO_GALA=15
+
+# Volatility model settings
+export CROSS_CHAIN_VOLATILITY_WINDOW_MIN=60
+export CROSS_CHAIN_DEFAULT_VOLATILITY_BPS=200
+export CROSS_CHAIN_CONFIDENCE_MULTIPLIER=2.0
+
+# Allowed tokens for cross-chain arb
+export CROSS_CHAIN_ALLOWED_TOKENS=GALA,GUSDT,GUSDC
+
+# Execution strategy: staged, immediate, or hedged
+export CROSS_CHAIN_EXECUTION_STRATEGY=staged
+```
+
+Or in `config.json`:
+
+```json
+{
+  "cross_chain_arbitrage": {
+    "enabled": true,
+    "min_spread_percent": 3.0,
+    "min_risk_adjusted_profit_bps": 100,
+    "max_bridge_time_minutes": 30,
+    "bridge_time_to_eth_min": 15,
+    "bridge_time_to_gala_min": 15,
+    "volatility_window_minutes": 60,
+    "default_volatility_bps": 200,
+    "confidence_multiplier": 2.0,
+    "allowed_tokens": ["GALA", "GUSDT", "GUSDC"],
+    "execution_strategy": "staged"
+  }
+}
+```
+
+#### Bridge Cost Estimates
+
+| Token | To Ethereum | To GalaChain |
+|-------|-------------|--------------|
+| GALA | 40 bps | 65 bps |
+| GWETH | 75 bps | 100 bps |
+| GUSDC/GUSDT | 50 bps | 75 bps |
+
+#### Slack Notifications
+
+Cross-chain opportunities trigger Slack notifications with:
+- Buy/sell exchanges and direction
+- Gross spread percentage
+- Bridge cost and volatility risk breakdown
+- Risk-adjusted profit
+- Recommendation status (profitable or not after risk adjustment)
+
 ### Command Line Options
 
 #### REST API Bot (`./cmd/bot`)
@@ -407,6 +510,8 @@ Or in `config.json`:
 | `--drift-threshold` | `20` | Drift threshold percentage for alerts |
 | `--auto-rebalance` | `false` | Enable automatic rebalancing |
 | `--eth-rpc` | - | Ethereum RPC URL for bridging (or use `ETH_RPC_URL` env) |
+| `--cross-chain` | `false` | Enable cross-chain arbitrage detection |
+| `--cross-chain-min-spread` | `3.0` | Minimum spread % for cross-chain arbitrage |
 
 #### Bridge CLI (`./cmd/bridge`)
 
@@ -781,7 +886,8 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Semi-automated rebalancing CLI
 - [x] Automated rebalancing based on drift thresholds
 - [x] Circuit breaker for rebalancing failures
-- [ ] Cross-chain arbitrage detection (Phase 4)
+- [x] Cross-chain arbitrage detection with volatility-aware risk adjustment
+- [ ] Cross-chain arbitrage execution (Phase 5)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades

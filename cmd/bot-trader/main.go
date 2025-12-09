@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jonasrmichel/gswap-arb/pkg/arbitrage"
 	"github.com/jonasrmichel/gswap-arb/pkg/bridge"
 	"github.com/jonasrmichel/gswap-arb/pkg/config"
 	"github.com/jonasrmichel/gswap-arb/pkg/executor"
@@ -33,6 +34,8 @@ var (
 	driftThreshold   = flag.Float64("drift-threshold", 20.0, "Drift threshold percentage for alerts")
 	autoRebalance    = flag.Bool("auto-rebalance", false, "Enable automatic rebalancing (requires bridge config)")
 	ethRPC           = flag.String("eth-rpc", "", "Ethereum RPC URL for bridging (or use ETH_RPC_URL env)")
+	crossChainArb    = flag.Bool("cross-chain", false, "Enable cross-chain arbitrage detection")
+	crossChainMinSpread = flag.Float64("cross-chain-min-spread", 3.0, "Minimum spread % for cross-chain arb")
 )
 
 func main() {
@@ -318,6 +321,32 @@ func main() {
 		}
 	}
 
+	// Create cross-chain arbitrage detector if enabled
+	var crossChainDetector *arbitrage.CrossChainArbitrageDetector
+	if *crossChainArb || cfg.CrossChainArbitrage.Enabled {
+		volatilityConfig := &arbitrage.VolatilityConfig{
+			WindowMinutes:        cfg.CrossChainArbitrage.VolatilityWindowMinutes,
+			MinSamples:           10,
+			DefaultVolatilityBps: cfg.CrossChainArbitrage.DefaultVolatilityBps,
+			ConfidenceMultiplier: cfg.CrossChainArbitrage.ConfidenceMultiplier,
+			BridgeTimeToEthMin:   cfg.CrossChainArbitrage.BridgeTimeToEthMin,
+			BridgeTimeToGalaMin:  cfg.CrossChainArbitrage.BridgeTimeToGalaMin,
+		}
+
+		ccConfig := &arbitrage.CrossChainConfig{
+			MinSpreadPercent:         *crossChainMinSpread,
+			MinRiskAdjustedProfitBps: cfg.CrossChainArbitrage.MinRiskAdjustedProfitBps,
+			MaxBridgeTimeMinutes:     cfg.CrossChainArbitrage.MaxBridgeTimeMinutes,
+			BridgeTimeToEthMin:       cfg.CrossChainArbitrage.BridgeTimeToEthMin,
+			BridgeTimeToGalaMin:      cfg.CrossChainArbitrage.BridgeTimeToGalaMin,
+			ExecutionStrategy:        cfg.CrossChainArbitrage.ExecutionStrategy,
+			AllowedTokens:            cfg.CrossChainArbitrage.AllowedTokens,
+		}
+
+		crossChainDetector = arbitrage.NewCrossChainArbitrageDetector(ccConfig, arbitrage.NewVolatilityModel(volatilityConfig))
+		fmt.Printf("Cross-chain arbitrage detection enabled (min spread: %.1f%%)\n", *crossChainMinSpread)
+	}
+
 	// Set up arbitrage callback with execution
 	aggregator.OnArbitrage(func(opp *types.ArbitrageOpportunity) {
 		rep.ReportOpportunities([]*types.ArbitrageOpportunity{opp})
@@ -394,6 +423,66 @@ func main() {
 			}
 		}
 	})
+
+	// Set up cross-chain arbitrage detection callbacks
+	if crossChainDetector != nil {
+		// Record price updates for volatility model
+		aggregator.OnPriceUpdate(func(update *websocket.PriceUpdate) {
+			// Calculate mid price for volatility tracking
+			if update.BidPrice != nil && update.AskPrice != nil {
+				midPrice, _ := new(big.Float).Quo(
+					new(big.Float).Add(update.BidPrice, update.AskPrice),
+					big.NewFloat(2),
+				).Float64()
+				if midPrice > 0 {
+					crossChainDetector.GetVolatilityModel().RecordPrice(update.Pair, midPrice)
+				}
+			}
+		})
+
+		// Hook into the cross-chain check callback for opportunity detection
+		aggregator.OnCrossChainCheck(func(pair string, prices map[string]*arbitrage.ExchangePrice, tradeSize *big.Float) {
+			// Detect cross-chain opportunities
+			crossChainOpps := crossChainDetector.DetectCrossChainOpportunities(pair, prices, tradeSize)
+
+			for _, ccOpp := range crossChainOpps {
+				// Report cross-chain opportunity
+				if *verbose {
+					report := arbitrage.FormatOpportunityReport(ccOpp)
+					if report != nil {
+						fmt.Println(report.FormatReportString())
+					}
+				}
+
+				// Notify Slack about cross-chain opportunity
+				if ccOpp.IsValid {
+					bridgeDir := ""
+					for _, hop := range ccOpp.Hops {
+						if hop.IsBridge() {
+							bridgeDir = hop.BridgeDirection
+							break
+						}
+					}
+
+					slackNotifier.NotifyCrossChainOpportunity(&notifier.CrossChainOpportunity{
+						Pair:              ccOpp.Pair,
+						BuyExchange:       ccOpp.StartExchange,
+						SellExchange:      ccOpp.EndExchange,
+						BridgeDirection:   bridgeDir,
+						SpreadPercent:     ccOpp.SpreadPercent,
+						GrossProfitBps:    ccOpp.SpreadBps,
+						BridgeCostBps:     ccOpp.TotalBridgeCostBps,
+						VolatilityRiskBps: ccOpp.VolatilityRiskBps,
+						RiskAdjustedBps:   ccOpp.RiskAdjustedProfit,
+						BridgeTimeMin:     ccOpp.TotalBridgeTimeMin,
+						TradeSize:         tradeSize.Text('f', 2),
+						ExpectedProfit:    ccOpp.NetProfit.Text('f', 4),
+						IsRecommended:     ccOpp.IsValid,
+					})
+				}
+			}
+		})
+	}
 
 	// Get pairs to subscribe
 	pairs := getPairs(cfg)

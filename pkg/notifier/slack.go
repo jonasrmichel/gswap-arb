@@ -718,3 +718,189 @@ func (s *SlackNotifier) NotifyCircuitBreakerAlert(alert *CircuitBreakerAlert) er
 
 	return s.sendMessage(blocks, fmt.Sprintf("Circuit Breaker %s: %s", alert.State, alert.Reason))
 }
+
+// CrossChainOpportunity represents a cross-chain arbitrage opportunity for notification.
+type CrossChainOpportunity struct {
+	Pair              string
+	BuyExchange       string
+	SellExchange      string
+	BridgeDirection   string
+	SpreadPercent     float64
+	GrossProfitBps    int
+	BridgeCostBps     int
+	VolatilityRiskBps int
+	RiskAdjustedBps   int
+	BridgeTimeMin     int
+	TradeSize         string
+	ExpectedProfit    string
+	IsRecommended     bool
+}
+
+// NotifyCrossChainOpportunity sends a notification about a cross-chain arbitrage opportunity.
+func (s *SlackNotifier) NotifyCrossChainOpportunity(opp *CrossChainOpportunity) error {
+	if !s.enabled || opp == nil {
+		return nil
+	}
+
+	emoji := "🌉"
+	status := "DETECTED"
+	if opp.IsRecommended {
+		emoji = "💰"
+		status = "RECOMMENDED"
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s Cross-Chain Arbitrage %s: %s", emoji, status, opp.Pair),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Buy:*\n%s", opp.BuyExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Sell:*\n%s", opp.SellExchange)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Bridge:*\n%s", opp.BridgeDirection)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Bridge Time:*\n~%d min", opp.BridgeTimeMin)},
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Gross Spread:*\n%.2f%% (%d bps)", opp.SpreadPercent, opp.GrossProfitBps)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Bridge Cost:*\n%d bps", opp.BridgeCostBps)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Volatility Risk:*\n%d bps", opp.VolatilityRiskBps)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Risk-Adjusted:*\n%d bps", opp.RiskAdjustedBps)},
+			},
+		},
+	}
+
+	if opp.TradeSize != "" && opp.ExpectedProfit != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Trade Size:*\n%s", opp.TradeSize)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Expected Profit:*\n%s", opp.ExpectedProfit)},
+			},
+		})
+	}
+
+	blocks = append(blocks, slackBlock{
+		Type: "context",
+		Text: &slackText{
+			Type: "mrkdwn",
+			Text: fmt.Sprintf("Detected at %s | Risk-adjusted profit accounts for price volatility during bridge", time.Now().Format(time.RFC3339)),
+		},
+	})
+
+	return s.sendMessage(blocks, fmt.Sprintf("Cross-Chain Arb %s: %s - Buy %s, Sell %s (%.2f%% spread, %d bps risk-adjusted)",
+		status, opp.Pair, opp.BuyExchange, opp.SellExchange, opp.SpreadPercent, opp.RiskAdjustedBps))
+}
+
+// CrossChainExecution represents a cross-chain arbitrage execution for notification.
+type CrossChainExecution struct {
+	Pair              string
+	BuyExchange       string
+	SellExchange      string
+	BridgeDirection   string
+	Stage             string // "buy_completed", "bridge_started", "bridge_completed", "sell_completed", "failed"
+	TradeSize         string
+	BuyPrice          string
+	SellPrice         string
+	BridgeTxID        string
+	ActualProfitBps   int
+	ExpectedProfitBps int
+	Error             string
+}
+
+// NotifyCrossChainExecution sends a notification about a cross-chain execution stage.
+func (s *SlackNotifier) NotifyCrossChainExecution(exec *CrossChainExecution) error {
+	if !s.enabled || exec == nil {
+		return nil
+	}
+
+	var emoji, headerText string
+	switch exec.Stage {
+	case "buy_completed":
+		emoji = "1️⃣"
+		headerText = "Stage 1: Buy Completed"
+	case "bridge_started":
+		emoji = "2️⃣"
+		headerText = "Stage 2: Bridge In Progress"
+	case "bridge_completed":
+		emoji = "✅"
+		headerText = "Stage 2: Bridge Completed"
+	case "sell_completed":
+		emoji = "🎉"
+		headerText = "Cross-Chain Arbitrage Completed!"
+	case "failed":
+		emoji = "❌"
+		headerText = "Cross-Chain Arbitrage Failed"
+	default:
+		emoji = "📊"
+		headerText = fmt.Sprintf("Stage: %s", exec.Stage)
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{
+				Type: "plain_text",
+				Text: fmt.Sprintf("%s %s - %s", emoji, headerText, exec.Pair),
+			},
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Buy:*\n%s @ %s", exec.BuyExchange, exec.BuyPrice)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Sell:*\n%s @ %s", exec.SellExchange, exec.SellPrice)},
+			},
+		},
+	}
+
+	if exec.BridgeTxID != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Bridge TX:* `%s`", exec.BridgeTxID),
+			},
+		})
+	}
+
+	if exec.Stage == "sell_completed" {
+		profitEmoji := "📈"
+		if exec.ActualProfitBps < exec.ExpectedProfitBps {
+			profitEmoji = "📉"
+		}
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Expected Profit:*\n%d bps", exec.ExpectedProfitBps)},
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Actual Profit:*\n%s %d bps", profitEmoji, exec.ActualProfitBps)},
+			},
+		})
+	}
+
+	if exec.Error != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: fmt.Sprintf("*Error:* %s", exec.Error),
+			},
+		})
+	}
+
+	blocks = append(blocks, slackBlock{
+		Type: "context",
+		Text: &slackText{
+			Type: "mrkdwn",
+			Text: fmt.Sprintf("Updated at %s", time.Now().Format(time.RFC3339)),
+		},
+	})
+
+	return s.sendMessage(blocks, fmt.Sprintf("Cross-Chain %s: %s - %s", exec.Stage, exec.Pair, headerText))
+}

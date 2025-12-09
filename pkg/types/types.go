@@ -160,12 +160,24 @@ type BotStats struct {
 // ChainHop represents a single hop in a chain arbitrage path.
 type ChainHop struct {
 	Exchange  string     `json:"exchange"`
-	Action    string     `json:"action"` // "buy" or "sell"
+	Action    string     `json:"action"` // "buy", "sell", "transfer", or "bridge"
 	Pair      string     `json:"pair"`
 	Price     *big.Float `json:"price"`
 	Size      *big.Float `json:"size,omitempty"`
 	FeeBps    int        `json:"fee_bps"`
 	Timestamp time.Time  `json:"timestamp"`
+
+	// Bridge-specific fields (only used when Action == "bridge")
+	BridgeDirection   string        `json:"bridge_direction,omitempty"`    // "to_ethereum" or "to_galachain"
+	BridgeToken       string        `json:"bridge_token,omitempty"`        // Token being bridged
+	BridgeCostBps     int           `json:"bridge_cost_bps,omitempty"`     // Bridge cost in basis points
+	BridgeTimeMinutes int           `json:"bridge_time_minutes,omitempty"` // Estimated bridge time
+	VolatilityRiskBps int           `json:"volatility_risk_bps,omitempty"` // Price volatility risk during bridge
+}
+
+// IsBridge returns true if this hop is a bridge operation.
+func (h ChainHop) IsBridge() bool {
+	return h.Action == "bridge"
 }
 
 // ChainArbitrageOpportunity represents a multi-hop arbitrage opportunity.
@@ -196,6 +208,15 @@ type ChainArbitrageOpportunity struct {
 	// Chain length
 	HopCount int `json:"hop_count"` // Number of exchanges in the chain
 
+	// Cross-chain specific fields
+	IsCrossChain       bool   `json:"is_cross_chain"`                  // True if this involves a bridge
+	BridgeCount        int    `json:"bridge_count,omitempty"`          // Number of bridge hops
+	TotalBridgeCostBps int    `json:"total_bridge_cost_bps,omitempty"` // Total bridge costs
+	TotalBridgeTimeMin int    `json:"total_bridge_time_min,omitempty"` // Total bridge time
+	VolatilityRiskBps  int    `json:"volatility_risk_bps,omitempty"`   // Price risk during bridge
+	RiskAdjustedProfit int    `json:"risk_adjusted_profit_bps,omitempty"` // Profit minus volatility risk
+	ExecutionStrategy  string `json:"execution_strategy,omitempty"`    // "immediate", "staged", "hedged"
+
 	// Timestamps
 	DetectedAt time.Time `json:"detected_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
@@ -203,6 +224,16 @@ type ChainArbitrageOpportunity struct {
 	// Validity
 	IsValid             bool     `json:"is_valid"`
 	InvalidationReasons []string `json:"invalidation_reasons,omitempty"`
+}
+
+// HasBridge returns true if the opportunity includes any bridge hops.
+func (o *ChainArbitrageOpportunity) HasBridge() bool {
+	for _, hop := range o.Hops {
+		if hop.IsBridge() {
+			return true
+		}
+	}
+	return false
 }
 
 // ChainPath represents a path through exchanges for arbitrage calculation.
