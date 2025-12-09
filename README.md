@@ -162,7 +162,7 @@ go build -o gswap-trader ./cmd/bot-trader
 
 ### Bridge CLI (Cross-Chain Transfers)
 
-The bridge CLI allows manual transfers between GalaChain and Ethereum:
+The bridge CLI allows bidirectional transfers between GalaChain and Ethereum:
 
 ```bash
 # Build the bridge CLI
@@ -177,24 +177,44 @@ go build -o gswap-bridge ./cmd/bridge
 # Bridge 100 GALA from GalaChain to Ethereum
 ./gswap-bridge --direction to-eth --token GALA --amount 100
 
-# Bridge 50 GUSDC from Ethereum to GalaChain
-./gswap-bridge --direction to-gala --token GUSDC --amount 50
+# Bridge 50 GUSDC from Ethereum to GalaChain (requires ETH_RPC_URL)
+ETH_RPC_URL=https://eth.llamarpc.com ./gswap-bridge --direction to-gala --token GUSDC --amount 50
 
 # Check bridge transaction status
 ./gswap-bridge --status <transaction-id>
 ```
 
+#### Bridge Directions
+
+| Direction | Description | Requirements |
+|-----------|-------------|--------------|
+| `to-eth` | GalaChain → Ethereum | `GSWAP_PRIVATE_KEY` |
+| `to-gala` | Ethereum → GalaChain | `GSWAP_PRIVATE_KEY`, `ETH_RPC_URL` |
+
+**GalaChain → Ethereum (`to-eth`)**:
+- Uses the GalaConnect DEX API with EIP-712 signed requests
+- Two-step process: RequestTokenBridgeOut → BridgeTokenOut
+- Bridge fees paid in GALA
+
+**Ethereum → GalaChain (`to-gala`)**:
+- Connects directly to Ethereum via RPC
+- Handles ERC-20 approval automatically (approves max on first use)
+- For GALA token: uses EIP-2612 permit (no separate approval tx)
+- Waits for Ethereum transaction confirmation before returning
+
 #### Supported Bridge Tokens
 
-| Token | Ethereum Address | Decimals | Permit |
-|-------|------------------|----------|--------|
-| GALA | 0xd1d2Eb1B1e90B638588728b4130137D262C87cae | 8 | Yes |
-| GWETH | 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 | 18 | No |
-| GUSDC | 0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48 | 6 | No |
-| GUSDT | 0xdAC17F958D2ee523a2206206994597C13D831ec7 | 6 | No |
-| GWTRX | 0x50327c6c5a14DCaDE707ABad2E27eB517df87AB5 | 6 | No |
-| GWBTC | 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 | 8 | No |
-| BENE | 0x624d739b88429a4cac97c9282adc226620c025d1 | 18 | No |
+| Token | Ethereum Address | Decimals | Permit | GalaChain Token Class |
+|-------|------------------|----------|--------|----------------------|
+| GALA | 0xd1d2Eb1B1e90B638588728b4130137D262C87cae | 8 | Yes | GALA\|Unit\|none\|none |
+| GWETH | 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 | 18 | No | GWETH\|Unit\|none\|none |
+| GUSDC | 0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48 | 6 | No | GUSDC\|Unit\|none\|none |
+| GUSDT | 0xdAC17F958D2ee523a2206206994597C13D831ec7 | 6 | No | GUSDT\|Unit\|none\|none |
+| GWTRX | 0x50327c6c5a14DCaDE707ABad2E27eB517df87AB5 | 6 | No | GWTRX\|Unit\|none\|none |
+| GWBTC | 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599 | 8 | No | GWBTC\|Unit\|none\|none |
+| BENE | 0x624d739b88429a4cac97c9282adc226620c025d1 | 18 | No | Token\|Unit\|BENE\|client:5c806869e7fd0e2384461ce9 |
+
+**Note**: BENE uses the memecoin token class format on GalaChain, which differs from standard Gala-created tokens.
 
 ### Command Line Options
 
@@ -239,7 +259,8 @@ go build -o gswap-bridge ./cmd/bridge
 | `--balance` | `false` | Show GalaChain balances |
 | `--status` | - | Check bridge transaction status |
 | `--list` | `false` | List supported tokens |
-| `--private-key` | - | Wallet private key (or use env var) |
+| `--private-key` | - | Wallet private key (or use `GSWAP_PRIVATE_KEY` env var) |
+| `--eth-rpc` | - | Ethereum RPC URL (or use `ETH_RPC_URL` env var) - required for `to-gala` |
 
 ### Environment Variables
 
@@ -263,10 +284,13 @@ KRAKEN_API_KEY=your_key
 KRAKEN_SECRET=your_secret
 KRAKEN_TRADING_ENABLED=false
 
-# GSwap DEX (for trading)
+# GSwap DEX (for trading and bridging)
 GSWAP_PRIVATE_KEY=your_private_key
 GSWAP_WALLET_ADDRESS=your_wallet_address
 GSWAP_TRADING_ENABLED=false
+
+# Ethereum RPC (for bridging Ethereum → GalaChain)
+ETH_RPC_URL=https://eth.llamarpc.com
 
 # Slack notifications
 SLACK_ENABLED=true
