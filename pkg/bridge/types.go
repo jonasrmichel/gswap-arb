@@ -22,7 +22,13 @@ type EthereumToken struct {
 	Address          string // Ethereum contract address
 	BridgeUsesPermit bool   // Whether the bridge uses EIP-2612 permit
 	Decimals         int    // Token decimals on Ethereum
-	GalaChainSymbol  string // Corresponding GalaChain symbol
+	GalaChainSymbol  string // Corresponding GalaChain symbol (deprecated, use TokenClass)
+
+	// GalaChain token class fields
+	Collection    string // e.g., "GALA" or "Token"
+	Category      string // e.g., "Unit"
+	Type          string // e.g., "none" or "BENE"
+	AdditionalKey string // e.g., "none" or "client:5c806869e7fd0e2384461ce9"
 }
 
 // SupportedTokens maps token symbols to their Ethereum configuration.
@@ -33,6 +39,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: true,
 		Decimals:         8,
 		GalaChainSymbol:  "GALA",
+		Collection:       "GALA",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"GWETH": {
 		Symbol:           "GWETH",
@@ -40,6 +50,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         18,
 		GalaChainSymbol:  "GWETH",
+		Collection:       "GWETH",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"GUSDC": {
 		Symbol:           "GUSDC",
@@ -47,6 +61,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         6,
 		GalaChainSymbol:  "GUSDC",
+		Collection:       "GUSDC",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"GUSDT": {
 		Symbol:           "GUSDT",
@@ -54,6 +72,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         6,
 		GalaChainSymbol:  "GUSDT",
+		Collection:       "GUSDT",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"GWTRX": {
 		Symbol:           "GWTRX",
@@ -61,6 +83,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         6,
 		GalaChainSymbol:  "GWTRX",
+		Collection:       "GWTRX",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"GWBTC": {
 		Symbol:           "GWBTC",
@@ -68,6 +94,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         8,
 		GalaChainSymbol:  "GWBTC",
+		Collection:       "GWBTC",
+		Category:         "Unit",
+		Type:             "none",
+		AdditionalKey:    "none",
 	},
 	"BENE": {
 		Symbol:           "BENE",
@@ -75,6 +105,10 @@ var SupportedTokens = map[string]EthereumToken{
 		BridgeUsesPermit: false,
 		Decimals:         18,
 		GalaChainSymbol:  "BENE",
+		Collection:       "Token",
+		Category:         "Unit",
+		Type:             "BENE",
+		AdditionalKey:    "client:5c806869e7fd0e2384461ce9",
 	},
 }
 
