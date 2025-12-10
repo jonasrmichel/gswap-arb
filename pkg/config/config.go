@@ -292,6 +292,7 @@ func DefaultConfig() *Config {
 			{Symbol: "SOL", Name: "Solana", Decimals: 9},
 			{Symbol: "TRX", Name: "TRON", Decimals: 6},
 			{Symbol: "MEW", Name: "Mew", Decimals: 8, GalaChainMint: "GMEW|Unit|none|none"},
+			{Symbol: "BENE", Name: "Bene", Decimals: 18, GalaChainMint: "Token|Unit|BENE|client:5c806869e7fd0e2384461ce9"},
 		},
 
 		Pairs: []PairSettings{
@@ -303,6 +304,7 @@ func DefaultConfig() *Config {
 			{Pair: "USDUC/USDC", Exchanges: []string{"kraken"}, Enabled: true},
 			{Pair: "TRX/USDT", Exchanges: []string{"binance"}, Enabled: true},
 			{Pair: "MEW/GALA", Exchanges: []string{"gswap"}, Enabled: true},
+			{Pair: "BENE/GALA", Exchanges: []string{"gswap"}, Enabled: true},
 		},
 	}
 }

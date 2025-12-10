@@ -198,6 +198,11 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 			GalaChainMint: "GMEW|Unit|none|none",
 			Decimals:      8,
 		},
+		"BENE": {
+			Symbol:        "BENE",
+			GalaChainMint: "Token|Unit|BENE|client:5c806869e7fd0e2384461ce9",
+			Decimals:      18,
+		},
 	}
 
 	// Build trading pairs
@@ -210,6 +215,7 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 		{Base: types.Token{Symbol: "GWETH"}, Quote: types.Token{Symbol: "GUSDC"}, Symbol: "GWETH/GUSDC", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GMEW"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GMEW/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GUSDUC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GUSDUC/GALA", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "BENE"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "BENE/GALA", Exchange: "gswap"},
 	}
 
 	return nil

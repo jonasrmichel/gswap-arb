@@ -17,8 +17,8 @@ import (
 
 var (
 	// Bridge operation flags
-	direction  = flag.String("direction", "", "Bridge direction: 'to-eth' or 'to-gala'")
-	token      = flag.String("token", "", "Token to bridge (GALA, GWETH, GUSDC, GUSDT, GWTRX, GWBTC, BENE)")
+	direction  = flag.String("direction", "", "Bridge direction: 'to-eth', 'to-gala', 'to-sol', or 'from-sol'")
+	token      = flag.String("token", "", "Token to bridge (GALA, GWETH, GUSDC, GUSDT, GWTRX, GWBTC, BENE for ETH; GALA for SOL)")
 	amount     = flag.String("amount", "", "Amount to bridge")
 	toAddress  = flag.String("to", "", "Destination address (optional, defaults to same wallet)")
 
@@ -28,31 +28,43 @@ var (
 	list    = flag.Bool("list", false, "List supported tokens")
 
 	// Config flags
-	privateKey = flag.String("private-key", "", "Private key (or use GSWAP_PRIVATE_KEY env var)")
-	ethRPC     = flag.String("eth-rpc", "", "Ethereum RPC URL (or use ETH_RPC_URL env var)")
+	privateKey        = flag.String("private-key", "", "Private key (or use GSWAP_PRIVATE_KEY env var)")
+	ethRPC            = flag.String("eth-rpc", "", "Ethereum RPC URL (or use ETH_RPC_URL env var)")
+	solanaKey         = flag.String("solana-key", "", "Solana private key (or use SOLANA_PRIVATE_KEY env var)")
+	solanaWallet      = flag.String("solana-wallet", "", "Solana wallet address (or use SOLANA_WALLET_ADDRESS env var)")
+	solanaRPC         = flag.String("solana-rpc", "", "Solana RPC URL (or use SOLANA_RPC_URL env var)")
+	solanaBridgeProg  = flag.String("solana-bridge-program", "", "Solana bridge program ID (or use SOLANA_BRIDGE_PROGRAM_ID env var)")
 )
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `GSwap Bridge CLI - Bridge tokens between GalaChain and Ethereum
+		fmt.Fprintf(os.Stderr, `GSwap Bridge CLI - Bridge tokens between GalaChain, Ethereum, and Solana
 
 Usage:
   bridge [flags]
 
 Operations:
-  --direction     Bridge direction: 'to-eth' (GalaChain→Ethereum) or 'to-gala' (Ethereum→GalaChain)
+  --direction     Bridge direction:
+                    'to-eth'   (GalaChain → Ethereum)
+                    'to-gala'  (Ethereum → GalaChain)
+                    'to-sol'   (GalaChain → Solana)
+                    'from-sol' (Solana → GalaChain) [web interface required]
   --token         Token to bridge (e.g., GALA, GWETH, GUSDC)
   --amount        Amount to bridge
   --to            Destination address (optional)
 
 Queries:
-  --balance       Show balances for all supported tokens on GalaChain
+  --balance       Show balances for all supported tokens
   --status <txid> Check status of a bridge transaction
   --list          List supported tokens
 
 Configuration:
-  --private-key   Wallet private key (or set GSWAP_PRIVATE_KEY)
-  --eth-rpc       Ethereum RPC URL (or set ETH_RPC_URL)
+  --private-key          Wallet private key (or set GSWAP_PRIVATE_KEY)
+  --eth-rpc              Ethereum RPC URL (or set ETH_RPC_URL)
+  --solana-key           Solana private key (or set SOLANA_PRIVATE_KEY)
+  --solana-wallet        Solana wallet address (or set SOLANA_WALLET_ADDRESS)
+  --solana-rpc           Solana RPC URL (or set SOLANA_RPC_URL)
+  --solana-bridge-program Solana bridge program ID (or set SOLANA_BRIDGE_PROGRAM_ID)
 
 Examples:
   # List supported tokens
@@ -67,12 +79,19 @@ Examples:
   # Bridge 50 GUSDC from Ethereum to GalaChain
   bridge --direction to-gala --token GUSDC --amount 50
 
+  # Bridge 100 GALA from GalaChain to Solana
+  bridge --direction to-sol --token GALA --amount 100
+
   # Check bridge transaction status
   bridge --status <transaction-id>
 
 Environment Variables:
-  GSWAP_PRIVATE_KEY    Wallet private key
-  ETH_RPC_URL          Ethereum RPC endpoint
+  GSWAP_PRIVATE_KEY         GalaChain/Ethereum wallet private key
+  ETH_RPC_URL               Ethereum RPC endpoint
+  SOLANA_PRIVATE_KEY        Solana wallet private key (Base58)
+  SOLANA_WALLET_ADDRESS     Solana wallet address (Base58)
+  SOLANA_RPC_URL            Solana RPC endpoint
+  SOLANA_BRIDGE_PROGRAM_ID  Gala bridge program ID on Solana
 
 `)
 	}
@@ -102,6 +121,27 @@ Environment Variables:
 		ethRPCURL = os.Getenv("ETH_RPC_URL")
 	}
 
+	// Get Solana configuration
+	solPrivKey := *solanaKey
+	if solPrivKey == "" {
+		solPrivKey = os.Getenv("SOLANA_PRIVATE_KEY")
+	}
+
+	solWalletAddr := *solanaWallet
+	if solWalletAddr == "" {
+		solWalletAddr = os.Getenv("SOLANA_WALLET_ADDRESS")
+	}
+
+	solRPCURL := *solanaRPC
+	if solRPCURL == "" {
+		solRPCURL = os.Getenv("SOLANA_RPC_URL")
+	}
+
+	solBridgeProgram := *solanaBridgeProg
+	if solBridgeProgram == "" {
+		solBridgeProgram = os.Getenv("SOLANA_BRIDGE_PROGRAM_ID")
+	}
+
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -117,9 +157,13 @@ Environment Variables:
 
 	// Create bridge executor
 	executor, err := bridge.NewBridgeExecutor(&bridge.BridgeConfig{
-		GalaChainPrivateKey: pk,
-		EthereumPrivateKey:  pk, // Use same key for both chains
-		EthereumRPCURL:      ethRPCURL,
+		GalaChainPrivateKey:   pk,
+		EthereumPrivateKey:    pk, // Use same key for both chains
+		EthereumRPCURL:        ethRPCURL,
+		SolanaPrivateKey:      solPrivKey,
+		SolanaWalletAddress:   solWalletAddr,
+		SolanaRPCURL:          solRPCURL,
+		SolanaBridgeProgramID: solBridgeProgram,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating bridge executor: %v\n", err)
@@ -153,6 +197,9 @@ func listTokens() {
 	fmt.Println("Supported Tokens for Bridging")
 	fmt.Println("==============================")
 	fmt.Println()
+
+	// Ethereum tokens
+	fmt.Println("GalaChain ↔ Ethereum:")
 	fmt.Printf("%-8s %-44s %-8s %-6s\n", "Symbol", "Ethereum Address", "Decimals", "Permit")
 	fmt.Println(strings.Repeat("-", 70))
 
@@ -165,10 +212,21 @@ func listTokens() {
 		fmt.Printf("%-8s %-44s %-8d %-6s\n", token.Symbol, token.Address, token.Decimals, permit)
 	}
 	fmt.Println()
+
+	// Solana tokens
+	fmt.Println("GalaChain ↔ Solana:")
+	fmt.Printf("%-8s %-44s %-8s\n", "Symbol", "Solana Mint Address", "Decimals")
+	fmt.Println(strings.Repeat("-", 60))
+
+	for _, symbol := range bridge.GetSolanaSupportedSymbols() {
+		token, _ := bridge.GetSolanaBridgeToken(symbol)
+		fmt.Printf("%-8s %-44s %-8d\n", token.Symbol, token.SolanaMint, token.Decimals)
+	}
+	fmt.Println()
 }
 
 func showBalances(ctx context.Context, executor *bridge.BridgeExecutor) {
-	galaAddr, ethAddr := executor.GetWalletAddresses()
+	galaAddr, ethAddr, solAddr := executor.GetAllWalletAddresses()
 
 	if galaAddr == "" {
 		fmt.Println("Error: Wallet not configured")
@@ -179,6 +237,9 @@ func showBalances(ctx context.Context, executor *bridge.BridgeExecutor) {
 	fmt.Println("================")
 	fmt.Printf("GalaChain: %s\n", executor.GetGalaChainAddress())
 	fmt.Printf("Ethereum:  %s\n", ethAddr)
+	if solAddr != "" {
+		fmt.Printf("Solana:    %s\n", solAddr)
+	}
 	fmt.Println()
 
 	symbols := bridge.GetSupportedSymbols()
@@ -228,6 +289,36 @@ func showBalances(ctx context.Context, executor *bridge.BridgeExecutor) {
 		fmt.Println("Ethereum Balances: Not available (ETH_RPC_URL not configured)")
 		fmt.Println()
 	}
+
+	// Show Solana balances if RPC is configured
+	if executor.GetSolanaRPCConfigured() {
+		fmt.Println("Solana Balances")
+		fmt.Println("===============")
+		fmt.Printf("%-8s %20s\n", "Token", "Balance")
+		fmt.Println(strings.Repeat("-", 30))
+
+		// Show native SOL balance first
+		solBalance, err := executor.GetSolanaBalance(ctx, "SOL")
+		if err != nil {
+			fmt.Printf("%-8s %20s\n", "SOL", "Error")
+		} else {
+			fmt.Printf("%-8s %20s\n", "SOL", formatBalance(solBalance))
+		}
+
+		// Show SPL token balances for bridgeable tokens
+		for _, symbol := range bridge.GetSolanaSupportedSymbols() {
+			balance, err := executor.GetSolanaBalance(ctx, symbol)
+			if err != nil {
+				fmt.Printf("%-8s %20s\n", symbol, "Error")
+				continue
+			}
+			fmt.Printf("%-8s %20s\n", symbol, formatBalance(balance))
+		}
+		fmt.Println()
+	} else {
+		fmt.Println("Solana Balances: Not available (SOLANA_RPC_URL or SOLANA_WALLET_ADDRESS not configured)")
+		fmt.Println()
+	}
 }
 
 func formatBalance(balance *big.Float) string {
@@ -266,8 +357,8 @@ func checkStatus(ctx context.Context, executor *bridge.BridgeExecutor, txID stri
 	}
 
 	// Show explorer links
-	galaConnectURL, etherscanURL := result.GetExplorerLinks()
-	if galaConnectURL != "" || etherscanURL != "" {
+	galaConnectURL, etherscanURL, solscanURL := result.GetAllExplorerLinks()
+	if galaConnectURL != "" || etherscanURL != "" || solscanURL != "" {
 		fmt.Println()
 		fmt.Println("Explorer Links:")
 		if galaConnectURL != "" {
@@ -275,6 +366,9 @@ func checkStatus(ctx context.Context, executor *bridge.BridgeExecutor, txID stri
 		}
 		if etherscanURL != "" {
 			fmt.Printf("  Etherscan:    %s\n", etherscanURL)
+		}
+		if solscanURL != "" {
+			fmt.Printf("  Solscan:      %s\n", solscanURL)
 		}
 	}
 
@@ -300,27 +394,48 @@ func executeBridge(ctx context.Context, executor *bridge.BridgeExecutor) {
 
 	// Parse direction
 	var dir bridge.BridgeDirection
+	var isSolanaBridge bool
 	switch strings.ToLower(*direction) {
 	case "to-eth", "to-ethereum", "toeth":
 		dir = bridge.BridgeToEthereum
 	case "to-gala", "to-galachain", "togala":
 		dir = bridge.BridgeToGalaChain
+	case "to-sol", "to-solana", "tosol":
+		dir = bridge.BridgeToSolana
+		isSolanaBridge = true
+	case "from-sol", "from-solana", "fromsol":
+		dir = bridge.BridgeFromSolana
+		isSolanaBridge = true
 	default:
-		fmt.Fprintf(os.Stderr, "Error: Invalid direction '%s'. Use 'to-eth' or 'to-gala'\n", *direction)
+		fmt.Fprintf(os.Stderr, "Error: Invalid direction '%s'. Use 'to-eth', 'to-gala', 'to-sol', or 'from-sol'\n", *direction)
 		os.Exit(1)
 	}
 
-	// Validate token
+	// Validate token based on bridge type
 	tokenUpper := strings.ToUpper(*token)
-	tokenInfo, ok := bridge.GetTokenBySymbol(tokenUpper)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Error: Unsupported token '%s'. Use --list to see supported tokens.\n", *token)
-		os.Exit(1)
+	var contractAddress string
+
+	if isSolanaBridge {
+		// Validate Solana-bridgeable token
+		tokenInfo, ok := bridge.GetSolanaBridgeToken(tokenUpper)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: Token '%s' is not supported for Solana bridging. Use --list to see supported tokens.\n", *token)
+			os.Exit(1)
+		}
+		contractAddress = tokenInfo.SolanaMint
+	} else {
+		// Validate Ethereum-bridgeable token
+		tokenInfo, ok := bridge.GetTokenBySymbol(tokenUpper)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: Unsupported token '%s'. Use --list to see supported tokens.\n", *token)
+			os.Exit(1)
+		}
+		contractAddress = tokenInfo.Address
 	}
 
 	// Parse amount
 	amountVal := new(big.Float)
-	_, ok = amountVal.SetString(*amount)
+	_, ok := amountVal.SetString(*amount)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Error: Invalid amount '%s'\n", *amount)
 		os.Exit(1)
@@ -340,7 +455,13 @@ func executeBridge(ctx context.Context, executor *bridge.BridgeExecutor) {
 	if *toAddress != "" {
 		fmt.Printf("Destination: %s\n", *toAddress)
 	}
-	fmt.Printf("Contract:    %s\n", tokenInfo.Address)
+	if contractAddress != "" {
+		if isSolanaBridge {
+			fmt.Printf("Solana Mint: %s\n", contractAddress)
+		} else {
+			fmt.Printf("Contract:    %s\n", contractAddress)
+		}
+	}
 	fmt.Println()
 
 	// Confirm operation
@@ -388,8 +509,8 @@ func executeBridge(ctx context.Context, executor *bridge.BridgeExecutor) {
 	fmt.Printf("Duration:        %s\n", time.Since(startTime).Round(time.Millisecond))
 
 	// Show explorer links
-	galaConnectURL, etherscanURL := result.GetExplorerLinks()
-	if galaConnectURL != "" || etherscanURL != "" {
+	galaConnectURL, etherscanURL, solscanURL := result.GetAllExplorerLinks()
+	if galaConnectURL != "" || etherscanURL != "" || solscanURL != "" {
 		fmt.Println()
 		fmt.Println("Explorer Links:")
 		if galaConnectURL != "" {
@@ -397,6 +518,9 @@ func executeBridge(ctx context.Context, executor *bridge.BridgeExecutor) {
 		}
 		if etherscanURL != "" {
 			fmt.Printf("  Etherscan:     %s\n", etherscanURL)
+		}
+		if solscanURL != "" {
+			fmt.Printf("  Solscan:       %s\n", solscanURL)
 		}
 	}
 

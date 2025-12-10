@@ -176,6 +176,9 @@ func mapToGSwapPair(pair string) string {
 		// MEW on GalaChain
 		"MEW/GALA": "GMEW/GALA",
 
+		// BENE memecoin
+		"BENE/GALA": "BENE/GALA",
+
 		// Direct GSwap pairs
 		"GWETH/GALA":  "GWETH/GALA",
 		"GUSDT/GALA":  "GUSDT/GALA",
@@ -221,5 +224,6 @@ func GetGSwapSupportedPairs() []string {
 		"GALA/USDC",
 		"USDUC/GALA",
 		"MEW/GALA",
+		"BENE/GALA",
 	}
 }

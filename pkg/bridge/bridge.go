@@ -1,4 +1,4 @@
-// Package bridge provides cross-chain bridge functionality between GalaChain and Ethereum.
+// Package bridge provides cross-chain bridge functionality between GalaChain, Ethereum, and Solana.
 package bridge
 
 import (
@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -23,6 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
+
+	solanaclient "github.com/jonasrmichel/gswap-arb/pkg/solana"
 )
 
 const (
@@ -55,7 +58,7 @@ const bridgeContractABI = `[
 	{"inputs":[{"name":"token","type":"address"},{"name":"amount","type":"uint256"},{"name":"destinationChainId","type":"uint16"},{"name":"recipient","type":"bytes"},{"name":"deadline","type":"uint256"},{"name":"v","type":"uint8"},{"name":"r","type":"bytes32"},{"name":"s","type":"bytes32"}],"name":"bridgeOutWithPermit","outputs":[],"stateMutability":"nonpayable","type":"function"}
 ]`
 
-// BridgeExecutor handles bridge operations between GalaChain and Ethereum.
+// BridgeExecutor handles bridge operations between GalaChain, Ethereum, and Solana.
 type BridgeExecutor struct {
 	// GalaChain credentials
 	galaPrivateKey    *ecdsa.PrivateKey
@@ -66,6 +69,16 @@ type BridgeExecutor struct {
 	ethPrivateKey    *ecdsa.PrivateKey
 	ethWalletAddress string
 	ethRPCURL        string
+
+	// Solana credentials
+	solanaPrivateKey      string // Base58 encoded
+	solanaWalletAddress   string // Base58 encoded
+	solanaRPCURL          string
+	solanaBridgeProgramID string // Gala bridge program ID on Solana
+
+	// Solana client (lazy initialized)
+	solanaClient   *solanaclient.Client
+	solanaClientMu sync.Mutex
 
 	client *http.Client
 }
@@ -129,6 +142,20 @@ func NewBridgeExecutor(config *BridgeConfig) (*BridgeExecutor, error) {
 		// Use same key for both chains
 		executor.ethPrivateKey = executor.galaPrivateKey
 		executor.ethWalletAddress = executor.galaWalletAddress
+	}
+
+	// Configure Solana credentials
+	if config.SolanaPrivateKey != "" {
+		executor.solanaPrivateKey = config.SolanaPrivateKey
+		executor.solanaWalletAddress = config.SolanaWalletAddress
+		executor.solanaRPCURL = config.SolanaRPCURL
+		if executor.solanaRPCURL == "" {
+			executor.solanaRPCURL = "https://api.mainnet-beta.solana.com"
+		}
+		executor.solanaBridgeProgramID = config.SolanaBridgeProgramID
+		if executor.solanaBridgeProgramID == "" {
+			executor.solanaBridgeProgramID = DefaultSolanaBridgeProgramID
+		}
 	}
 
 	return executor, nil
@@ -888,6 +915,10 @@ func (b *BridgeExecutor) Bridge(ctx context.Context, req *BridgeRequest) (*Bridg
 		return b.BridgeToEthereum(ctx, req)
 	case BridgeToGalaChain:
 		return b.BridgeToGalaChain(ctx, req)
+	case BridgeToSolana:
+		return b.BridgeToSolana(ctx, req)
+	case BridgeFromSolana:
+		return b.BridgeFromSolana(ctx, req)
 	default:
 		return nil, fmt.Errorf("invalid bridge direction: %s", req.Direction)
 	}
@@ -1100,8 +1131,8 @@ func (b *BridgeExecutor) signGalaChainTransaction(data interface{}) (string, err
 
 // signEIP712BridgeRequest signs a bridge request using proper EIP-712 typed data signing.
 func (b *BridgeExecutor) signEIP712BridgeRequest(message map[string]interface{}, hasCrossRate bool) (string, error) {
-	// Build EIP-712 typed data
-	types := getLegacyTypedDataTypes()
+	// Build EIP-712 typed data - use cross-rate types for Solana bridges
+	types := getTypedDataTypes(hasCrossRate)
 
 	// Convert to apitypes format
 	apiTypes := make(apitypes.Types)
@@ -1222,9 +1253,10 @@ func hashEIP712Message(message map[string]interface{}, hasCrossRate bool) [32]by
 	return crypto.Keccak256Hash(jsonData)
 }
 
-// getLegacyTypedDataTypes returns the EIP-712 type definitions for legacy (non-cross-rate) transactions
-func getLegacyTypedDataTypes() map[string][]map[string]string {
-	return map[string][]map[string]string{
+// getTypedDataTypes returns the EIP-712 type definitions based on whether cross-rate is used.
+// Cross-rate is used for Solana bridges where galaExchangeCrossRate is present in the fee data.
+func getTypedDataTypes(hasCrossRate bool) map[string][]map[string]string {
+	baseTypes := map[string][]map[string]string{
 		"GalaTransaction": {
 			{"name": "destinationChainId", "type": "uint256"},
 			{"name": "destinationChainTxFee", "type": "destinationChainTxFee"},
@@ -1233,34 +1265,11 @@ func getLegacyTypedDataTypes() map[string][]map[string]string {
 			{"name": "tokenInstance", "type": "tokenInstance"},
 			{"name": "uniqueKey", "type": "string"},
 		},
-		"destinationChainTxFee": {
-			{"name": "bridgeToken", "type": "bridgeToken"},
-			{"name": "bridgeTokenIsNonFungible", "type": "bool"},
-			{"name": "estimatedPricePerTxFeeUnit", "type": "string"},
-			{"name": "estimatedTotalTxFeeInExternalToken", "type": "string"},
-			{"name": "estimatedTotalTxFeeInGala", "type": "string"},
-			{"name": "estimatedTxFeeUnitsTotal", "type": "string"},
-			{"name": "galaDecimals", "type": "uint256"},
-			{"name": "galaExchangeRate", "type": "galaExchangeRate"},
-			{"name": "timestamp", "type": "uint256"},
-			{"name": "signingIdentity", "type": "string"},
-			{"name": "signature", "type": "string"},
-		},
 		"bridgeToken": {
 			{"name": "collection", "type": "string"},
 			{"name": "category", "type": "string"},
 			{"name": "type", "type": "string"},
 			{"name": "additionalKey", "type": "string"},
-		},
-		"galaExchangeRate": {
-			{"name": "identity", "type": "string"},
-			{"name": "oracle", "type": "string"},
-			{"name": "source", "type": "string"},
-			{"name": "sourceUrl", "type": "string"},
-			{"name": "timestamp", "type": "uint256"},
-			{"name": "baseToken", "type": "baseToken"},
-			{"name": "exchangeRate", "type": "string"},
-			{"name": "externalQuoteToken", "type": "externalQuoteToken"},
 		},
 		"baseToken": {
 			{"name": "collection", "type": "string"},
@@ -1273,6 +1282,10 @@ func getLegacyTypedDataTypes() map[string][]map[string]string {
 			{"name": "name", "type": "string"},
 			{"name": "symbol", "type": "string"},
 		},
+		"externalBaseToken": {
+			{"name": "name", "type": "string"},
+			{"name": "symbol", "type": "string"},
+		},
 		"tokenInstance": {
 			{"name": "collection", "type": "string"},
 			{"name": "category", "type": "string"},
@@ -1281,6 +1294,92 @@ func getLegacyTypedDataTypes() map[string][]map[string]string {
 			{"name": "instance", "type": "string"},
 		},
 	}
+
+	if hasCrossRate {
+		// Cross-rate structure for Solana bridges
+		baseTypes["destinationChainTxFee"] = []map[string]string{
+			{"name": "bridgeToken", "type": "bridgeToken"},
+			{"name": "bridgeTokenIsNonFungible", "type": "bool"},
+			{"name": "estimatedPricePerTxFeeUnit", "type": "string"},
+			{"name": "estimatedTotalTxFeeInExternalToken", "type": "string"},
+			{"name": "estimatedTotalTxFeeInGala", "type": "string"},
+			{"name": "estimatedTxFeeUnitsTotal", "type": "string"},
+			{"name": "galaDecimals", "type": "uint256"},
+			{"name": "galaExchangeCrossRate", "type": "galaExchangeCrossRate"},
+			{"name": "timestamp", "type": "uint256"},
+			{"name": "signingIdentity", "type": "string"},
+			{"name": "signature", "type": "string"},
+		}
+		baseTypes["galaExchangeCrossRate"] = []map[string]string{
+			{"name": "baseTokenCrossRate", "type": "baseTokenCrossRate"},
+			{"name": "crossRate", "type": "string"},
+			{"name": "externalCrossRateToken", "type": "externalCrossRateToken"},
+			{"name": "identity", "type": "string"},
+			{"name": "oracle", "type": "string"},
+			{"name": "quoteTokenCrossRate", "type": "quoteTokenCrossRate"},
+			{"name": "source", "type": "string"},
+			{"name": "timestamp", "type": "uint256"},
+		}
+		baseTypes["baseTokenCrossRate"] = []map[string]string{
+			{"name": "identity", "type": "string"},
+			{"name": "oracle", "type": "string"},
+			{"name": "source", "type": "string"},
+			{"name": "sourceUrl", "type": "string"},
+			{"name": "timestamp", "type": "uint256"},
+			{"name": "exchangeRate", "type": "string"},
+			{"name": "externalBaseToken", "type": "externalBaseToken"},
+			{"name": "externalQuoteToken", "type": "externalQuoteToken"},
+			{"name": "signature", "type": "string"},
+		}
+		baseTypes["quoteTokenCrossRate"] = []map[string]string{
+			{"name": "identity", "type": "string"},
+			{"name": "oracle", "type": "string"},
+			{"name": "source", "type": "string"},
+			{"name": "sourceUrl", "type": "string"},
+			{"name": "timestamp", "type": "uint256"},
+			{"name": "baseToken", "type": "baseToken"},
+			{"name": "exchangeRate", "type": "string"},
+			{"name": "externalQuoteToken", "type": "externalQuoteToken"},
+			{"name": "signature", "type": "string"},
+		}
+		baseTypes["externalCrossRateToken"] = []map[string]string{
+			{"name": "name", "type": "string"},
+			{"name": "symbol", "type": "string"},
+		}
+	} else {
+		// Standard structure for Ethereum bridges
+		baseTypes["destinationChainTxFee"] = []map[string]string{
+			{"name": "bridgeToken", "type": "bridgeToken"},
+			{"name": "bridgeTokenIsNonFungible", "type": "bool"},
+			{"name": "estimatedPricePerTxFeeUnit", "type": "string"},
+			{"name": "estimatedTotalTxFeeInExternalToken", "type": "string"},
+			{"name": "estimatedTotalTxFeeInGala", "type": "string"},
+			{"name": "estimatedTxFeeUnitsTotal", "type": "string"},
+			{"name": "galaDecimals", "type": "uint256"},
+			{"name": "galaExchangeRate", "type": "galaExchangeRate"},
+			{"name": "timestamp", "type": "uint256"},
+			{"name": "signingIdentity", "type": "string"},
+			{"name": "signature", "type": "string"},
+		}
+		baseTypes["galaExchangeRate"] = []map[string]string{
+			{"name": "identity", "type": "string"},
+			{"name": "oracle", "type": "string"},
+			{"name": "source", "type": "string"},
+			{"name": "sourceUrl", "type": "string"},
+			{"name": "timestamp", "type": "uint256"},
+			{"name": "baseToken", "type": "baseToken"},
+			{"name": "exchangeRate", "type": "string"},
+			{"name": "externalQuoteToken", "type": "externalQuoteToken"},
+		}
+	}
+
+	return baseTypes
+}
+
+// getLegacyTypedDataTypes returns the EIP-712 type definitions for legacy (non-cross-rate) transactions
+// Deprecated: Use getTypedDataTypes(false) instead
+func getLegacyTypedDataTypes() map[string][]map[string]string {
+	return getTypedDataTypes(false)
 }
 
 // GetWalletAddresses returns the configured wallet addresses.
@@ -1288,8 +1387,554 @@ func (b *BridgeExecutor) GetWalletAddresses() (galaChain, ethereum string) {
 	return b.galaWalletAddress, b.ethWalletAddress
 }
 
+// GetAllWalletAddresses returns all configured wallet addresses including Solana.
+func (b *BridgeExecutor) GetAllWalletAddresses() (galaChain, ethereum, solana string) {
+	return b.galaWalletAddress, b.ethWalletAddress, b.solanaWalletAddress
+}
+
 // GetGalaChainAddress returns the GalaChain format address.
 func (b *BridgeExecutor) GetGalaChainAddress() string {
 	return b.galaChainAddress
+}
+
+// GetSolanaWalletAddress returns the Solana wallet address.
+func (b *BridgeExecutor) GetSolanaWalletAddress() string {
+	return b.solanaWalletAddress
+}
+
+// GetSolanaRPCConfigured returns whether Solana RPC is configured.
+func (b *BridgeExecutor) GetSolanaRPCConfigured() bool {
+	return b.solanaRPCURL != "" && b.solanaWalletAddress != ""
+}
+
+// BridgeToSolana initiates a bridge transfer from GalaChain to Solana.
+// This uses the GalaConnect DEX API which supports Solana as a destination chain.
+func (b *BridgeExecutor) BridgeToSolana(ctx context.Context, req *BridgeRequest) (*BridgeResult, error) {
+	if b.galaPrivateKey == nil {
+		return nil, fmt.Errorf("GalaChain private key not configured")
+	}
+
+	// Validate token is supported for Solana bridging
+	tokenInfo, ok := GetSolanaBridgeToken(req.Token)
+	if !ok {
+		return nil, fmt.Errorf("token %s is not supported for Solana bridging", req.Token)
+	}
+
+	// Check balance on GalaChain
+	balance, err := b.GetGalaChainBalance(ctx, req.Token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GalaChain balance: %w", err)
+	}
+
+	if balance.Cmp(req.Amount) < 0 {
+		return nil, fmt.Errorf("insufficient GalaChain balance: have %s, need %s", balance.Text('f', 8), req.Amount.Text('f', 8))
+	}
+
+	// Determine destination address (Solana wallet)
+	toAddress := req.ToAddress
+	if toAddress == "" {
+		if b.solanaWalletAddress == "" {
+			return nil, fmt.Errorf("no destination Solana address provided and no Solana wallet configured")
+		}
+		toAddress = b.solanaWalletAddress
+	}
+
+	// Step 1: Get bridge fee information for Solana
+	feeReq := map[string]interface{}{
+		"chainId": ChainSolana, // "Solana" - GalaConnect API requires this exact string
+		"bridgeToken": map[string]string{
+			"collection":    tokenInfo.Collection,
+			"category":      tokenInfo.Category,
+			"type":          tokenInfo.Type,
+			"additionalKey": tokenInfo.AdditionalKey,
+		},
+	}
+
+	feeBody, err := json.Marshal(feeReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal fee request: %w", err)
+	}
+
+	feeHTTPReq, err := http.NewRequestWithContext(ctx, "POST", galaConnectAPI+"/v1/bridge/fee", bytes.NewReader(feeBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fee request: %w", err)
+	}
+	feeHTTPReq.Header.Set("Content-Type", "application/json")
+	feeHTTPReq.Header.Set("X-Wallet-Address", b.galaChainAddress)
+
+	feeResp, err := b.client.Do(feeHTTPReq)
+	if err != nil {
+		return nil, fmt.Errorf("fee API request failed: %w", err)
+	}
+	defer feeResp.Body.Close()
+
+	feeRespBody, err := io.ReadAll(feeResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read fee response: %w", err)
+	}
+
+	if feeResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fee request failed with status %d: %s", feeResp.StatusCode, string(feeRespBody))
+	}
+
+	var feeData map[string]interface{}
+	if err := json.Unmarshal(feeRespBody, &feeData); err != nil {
+		return nil, fmt.Errorf("failed to decode fee response: %w", err)
+	}
+
+	// Step 2: Create and sign the bridge request
+	uuid, err := generateBridgeRequestID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate unique key: %w", err)
+	}
+	uniqueKey := "galaconnect-operation-" + uuid
+
+	// Determine cross-rate presence
+	_, hasCrossRate := feeData["galaExchangeCrossRate"]
+
+	// Build the message for signing
+	// Note: Solana chain ID is 1002 in GalaConnect (not 3)
+	signMessage := map[string]interface{}{
+		"uniqueKey": uniqueKey,
+		"tokenInstance": map[string]interface{}{
+			"collection":    tokenInfo.Collection,
+			"category":      tokenInfo.Category,
+			"type":          tokenInfo.Type,
+			"additionalKey": tokenInfo.AdditionalKey,
+			"instance":      "0",
+		},
+		"destinationChainId":    1002, // Solana chain ID
+		"quantity":              req.Amount.Text('f', 0),
+		"recipient":             toAddress, // Solana address (Base58)
+		"destinationChainTxFee": feeData,
+	}
+
+	// Sign the bridge request
+	signature, err := b.signEIP712BridgeRequest(signMessage, hasCrossRate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign bridge request: %w", err)
+	}
+
+	// EIP-712 domain
+	domain := map[string]interface{}{
+		"name":    "GalaConnect",
+		"chainId": 1,
+	}
+
+	// Use cross-rate types for Solana bridges
+	types := getTypedDataTypes(hasCrossRate)
+
+	typedDataPayload := map[string]interface{}{
+		"domain":      domain,
+		"message":     signMessage,
+		"primaryType": "GalaTransaction",
+		"types":       types,
+	}
+	typedDataJSON, _ := json.Marshal(typedDataPayload)
+	prefix := fmt.Sprintf("\x19Ethereum Signed Message:\n%d", len(typedDataJSON))
+
+	// Build the full request DTO
+	bridgeReqDTO := map[string]interface{}{
+		"uniqueKey": uniqueKey,
+		"tokenInstance": map[string]interface{}{
+			"collection":    tokenInfo.Collection,
+			"category":      tokenInfo.Category,
+			"type":          tokenInfo.Type,
+			"additionalKey": tokenInfo.AdditionalKey,
+			"instance":      "0",
+		},
+		"destinationChainId":    1002, // Solana chain ID
+		"quantity":              req.Amount.Text('f', 0),
+		"recipient":             toAddress,
+		"destinationChainTxFee": feeData,
+		"signature":             signature,
+		"prefix":                prefix,
+		"types":                 types,
+		"domain":                domain,
+	}
+
+	bridgeBody, err := json.Marshal(bridgeReqDTO)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal bridge request: %w", err)
+	}
+
+	// Step 3: Submit the bridge request
+	bridgeHTTPReq, err := http.NewRequestWithContext(ctx, "POST", galaConnectAPI+"/v1/RequestTokenBridgeOut", bytes.NewReader(bridgeBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bridge request: %w", err)
+	}
+	bridgeHTTPReq.Header.Set("Content-Type", "application/json")
+	bridgeHTTPReq.Header.Set("X-Wallet-Address", b.galaChainAddress)
+
+	bridgeResp, err := b.client.Do(bridgeHTTPReq)
+	if err != nil {
+		return nil, fmt.Errorf("bridge API request failed: %w", err)
+	}
+	defer bridgeResp.Body.Close()
+
+	bridgeRespBody, err := io.ReadAll(bridgeResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read bridge response: %w", err)
+	}
+
+	if bridgeResp.StatusCode != http.StatusOK && bridgeResp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("bridge request failed with status %d: %s", bridgeResp.StatusCode, string(bridgeRespBody))
+	}
+
+	var bridgeReqResp map[string]interface{}
+	if err := json.Unmarshal(bridgeRespBody, &bridgeReqResp); err != nil {
+		return nil, fmt.Errorf("failed to decode bridge request response: %w", err)
+	}
+
+	bridgeRequestID := extractBridgeRequestID(bridgeReqResp)
+	if bridgeRequestID == "" {
+		return nil, fmt.Errorf("no bridgeRequestId in response: %s", string(bridgeRespBody))
+	}
+
+	// Step 4: Execute the bridge with BridgeTokenOut
+	bridgeOutReq := map[string]interface{}{
+		"bridgeFromChannel": "asset",
+		"bridgeRequestId":   bridgeRequestID,
+	}
+
+	bridgeOutBody, err := json.Marshal(bridgeOutReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal bridge out request: %w", err)
+	}
+
+	bridgeOutHTTPReq, err := http.NewRequestWithContext(ctx, "POST", galaConnectAPI+"/v1/BridgeTokenOut", bytes.NewReader(bridgeOutBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bridge out request: %w", err)
+	}
+	bridgeOutHTTPReq.Header.Set("Content-Type", "application/json")
+	bridgeOutHTTPReq.Header.Set("X-Wallet-Address", b.galaChainAddress)
+
+	bridgeOutResp, err := b.client.Do(bridgeOutHTTPReq)
+	if err != nil {
+		return nil, fmt.Errorf("bridge out API request failed: %w", err)
+	}
+	defer bridgeOutResp.Body.Close()
+
+	bridgeOutRespBody, err := io.ReadAll(bridgeOutResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read bridge out response: %w", err)
+	}
+
+	if bridgeOutResp.StatusCode != http.StatusOK && bridgeOutResp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("bridge out failed with status %d: %s", bridgeOutResp.StatusCode, string(bridgeOutRespBody))
+	}
+
+	var bridgeOutData map[string]interface{}
+	if err := json.Unmarshal(bridgeOutRespBody, &bridgeOutData); err != nil {
+		return nil, fmt.Errorf("failed to decode bridge out response: %w", err)
+	}
+
+	txHash := extractTransactionHash(bridgeOutData)
+
+	return &BridgeResult{
+		TransactionID: bridgeRequestID,
+		Token:         req.Token,
+		Amount:        req.Amount,
+		Direction:     BridgeToSolana,
+		FromAddress:   b.galaWalletAddress,
+		ToAddress:     toAddress,
+		Status:        BridgeStatusPending,
+		SourceTxHash:  txHash,
+		EstimatedTime: 5 * time.Minute, // Solana bridges are typically faster
+		CreatedAt:     time.Now(),
+	}, nil
+}
+
+// getSolanaClient returns the Solana client, creating it lazily if needed.
+func (b *BridgeExecutor) getSolanaClient() (*solanaclient.Client, error) {
+	b.solanaClientMu.Lock()
+	defer b.solanaClientMu.Unlock()
+
+	if b.solanaClient != nil {
+		return b.solanaClient, nil
+	}
+
+	if b.solanaPrivateKey == "" {
+		return nil, fmt.Errorf("Solana private key not configured")
+	}
+
+	client, err := solanaclient.NewClient(&solanaclient.ClientConfig{
+		RPCURL:        b.solanaRPCURL,
+		PrivateKey:    b.solanaPrivateKey,
+		WalletAddress: b.solanaWalletAddress,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	b.solanaClient = client
+	return client, nil
+}
+
+// BridgeFromSolana initiates a bridge transfer from Solana to GalaChain.
+// This uses the GalaConnect API to create a bridge request and then signs/sends
+// the Solana transaction using the solana-go SDK.
+func (b *BridgeExecutor) BridgeFromSolana(ctx context.Context, req *BridgeRequest) (*BridgeResult, error) {
+	if b.solanaPrivateKey == "" {
+		return nil, fmt.Errorf("Solana private key not configured")
+	}
+	if b.solanaWalletAddress == "" {
+		return nil, fmt.Errorf("Solana wallet address not configured")
+	}
+
+	// Validate token is supported for Solana bridging
+	tokenInfo, ok := GetSolanaBridgeToken(req.Token)
+	if !ok {
+		return nil, fmt.Errorf("token %s is not supported for Solana bridging", req.Token)
+	}
+
+	// Determine destination address (GalaChain wallet)
+	toAddress := req.ToAddress
+	if toAddress == "" {
+		if b.galaChainAddress == "" {
+			return nil, fmt.Errorf("no destination GalaChain address provided and no GalaChain wallet configured")
+		}
+		toAddress = b.galaChainAddress
+	}
+
+	// Get Solana client
+	solClient, err := b.getSolanaClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Solana client: %w", err)
+	}
+
+	// Check bridge program ID
+	if b.solanaBridgeProgramID == "" {
+		return nil, fmt.Errorf("Solana bridge program ID not configured. Set SOLANA_BRIDGE_PROGRAM_ID environment variable")
+	}
+
+	// Convert amount to base units
+	decimals := tokenInfo.Decimals
+	multiplier := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	amountInUnits := new(big.Float).Mul(req.Amount, multiplier)
+	amountUint, _ := amountInUnits.Uint64()
+
+	// Build bridge parameters
+	bridgeParams := &solanaclient.BridgeToGalaChainParams{
+		BridgeProgramID:   b.solanaBridgeProgramID,
+		GalaChainIdentity: toAddress,
+		TokenMint:         tokenInfo.SolanaMint,
+		Amount:            amountUint,
+	}
+
+	var txSig string
+
+	// Check if this is native SOL or an SPL token
+	// Native SOL uses wrapped SOL mint: So11111111111111111111111111111111111111112
+	if tokenInfo.SolanaMint == "So11111111111111111111111111111111111111112" {
+		// Bridge native SOL
+		txSig, err = solClient.BridgeNativeSOLToGalaChain(ctx, bridgeParams)
+	} else {
+		// Bridge SPL token
+		txSig, err = solClient.BridgeSPLTokenToGalaChain(ctx, bridgeParams)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute Solana bridge transaction: %w", err)
+	}
+
+	return &BridgeResult{
+		TransactionID: txSig,
+		Token:         req.Token,
+		Amount:        req.Amount,
+		Direction:     BridgeFromSolana,
+		FromAddress:   b.solanaWalletAddress,
+		ToAddress:     toAddress,
+		Status:        BridgeStatusPending,
+		SourceTxHash:  txSig,
+		EstimatedTime: 5 * time.Minute,
+		CreatedAt:     time.Now(),
+	}, nil
+}
+
+// GetSolanaBalance returns the balance for a token on Solana.
+// For native SOL, pass "SOL" as the token symbol.
+func (b *BridgeExecutor) GetSolanaBalance(ctx context.Context, token string) (*big.Float, error) {
+	// Try to use the Solana SDK client first
+	client, err := b.getSolanaClient()
+	if err != nil {
+		// Fall back to manual RPC calls if client creation fails
+		return b.getSolanaBalanceFallback(ctx, token)
+	}
+
+	// Handle native SOL balance
+	if token == "SOL" {
+		return client.GetSOLBalance(ctx)
+	}
+
+	// Get token info for SPL token
+	tokenInfo, ok := GetSolanaBridgeToken(token)
+	if !ok {
+		return nil, fmt.Errorf("unsupported Solana token: %s", token)
+	}
+
+	if tokenInfo.SolanaMint == "" {
+		return nil, fmt.Errorf("no Solana mint address for token: %s", token)
+	}
+
+	return client.GetTokenBalance(ctx, tokenInfo.SolanaMint)
+}
+
+// getSolanaBalanceFallback is used when the Solana SDK client cannot be created.
+func (b *BridgeExecutor) getSolanaBalanceFallback(ctx context.Context, token string) (*big.Float, error) {
+	if b.solanaRPCURL == "" {
+		return nil, fmt.Errorf("Solana RPC URL not configured")
+	}
+	if b.solanaWalletAddress == "" {
+		return nil, fmt.Errorf("Solana wallet address not configured")
+	}
+
+	// Handle native SOL balance
+	if token == "SOL" {
+		return b.getSolanaSOLBalance(ctx)
+	}
+
+	// Get token info for SPL token
+	tokenInfo, ok := GetSolanaBridgeToken(token)
+	if !ok {
+		return nil, fmt.Errorf("unsupported Solana token: %s", token)
+	}
+
+	if tokenInfo.SolanaMint == "" {
+		return nil, fmt.Errorf("no Solana mint address for token: %s", token)
+	}
+
+	return b.getSolanaSPLBalance(ctx, tokenInfo.SolanaMint, tokenInfo.Decimals)
+}
+
+// getSolanaSOLBalance gets the native SOL balance using raw RPC.
+func (b *BridgeExecutor) getSolanaSOLBalance(ctx context.Context) (*big.Float, error) {
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getBalance",
+		"params":  []interface{}{b.solanaWalletAddress},
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", b.solanaRPCURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Result struct {
+			Value uint64 `json:"value"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("Solana RPC error: %s", result.Error.Message)
+	}
+
+	// Convert lamports to SOL (9 decimals)
+	balance := new(big.Float).SetUint64(result.Result.Value)
+	balance.Quo(balance, big.NewFloat(1e9))
+
+	return balance, nil
+}
+
+// getSolanaSPLBalance gets the balance for an SPL token using raw RPC.
+func (b *BridgeExecutor) getSolanaSPLBalance(ctx context.Context, mint string, decimals int) (*big.Float, error) {
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getTokenAccountsByOwner",
+		"params": []interface{}{
+			b.solanaWalletAddress,
+			map[string]string{"mint": mint},
+			map[string]string{"encoding": "jsonParsed"},
+		},
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", b.solanaRPCURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Result struct {
+			Value []struct {
+				Account struct {
+					Data struct {
+						Parsed struct {
+							Info struct {
+								TokenAmount struct {
+									UIAmount float64 `json:"uiAmount"`
+								} `json:"tokenAmount"`
+							} `json:"info"`
+						} `json:"parsed"`
+					} `json:"data"`
+				} `json:"account"`
+			} `json:"value"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("Solana RPC error: %s", result.Error.Message)
+	}
+
+	// Sum up balances from all token accounts
+	totalBalance := big.NewFloat(0)
+	for _, account := range result.Result.Value {
+		amount := account.Account.Data.Parsed.Info.TokenAmount.UIAmount
+		totalBalance.Add(totalBalance, big.NewFloat(amount))
+	}
+
+	return totalBalance, nil
 }
 

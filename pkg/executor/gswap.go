@@ -162,6 +162,7 @@ func (g *GSwapExecutor) initializeTokens() {
 		"GSOL":   {Symbol: "GSOL", GalaChainKey: "GSOL|Unit|none|none", Decimals: 9},
 		"GWBTC":  {Symbol: "GWBTC", GalaChainKey: "GWBTC|Unit|none|none", Decimals: 8},
 		"GMEW":   {Symbol: "GMEW", GalaChainKey: "GMEW|Unit|none|none", Decimals: 8},
+		"BENE":   {Symbol: "BENE", GalaChainKey: "Token|Unit|BENE|client:5c806869e7fd0e2384461ce9", Decimals: 18},
 		// Aliases
 		"ETH":   {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
 		"USDC":  {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
