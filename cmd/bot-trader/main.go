@@ -5,6 +5,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"math/big"
 	"os"
 	"os/signal"
@@ -24,25 +26,57 @@ import (
 )
 
 var (
-	configPath       = flag.String("config", "", "Path to configuration file (JSON)")
-	outputFormat     = flag.String("format", "text", "Output format: text, json, csv")
-	verbose          = flag.Bool("verbose", true, "Enable verbose output")
-	dryRun           = flag.Bool("dry-run", true, "Dry run mode (default: true for safety)")
-	maxTradeSize     = flag.Float64("max-trade", 10.0, "Maximum trade size in quote currency")
-	minProfit        = flag.Int("min-profit", 20, "Minimum profit in basis points")
-	inventoryCheck   = flag.Bool("inventory", true, "Enable inventory monitoring")
-	driftThreshold   = flag.Float64("drift-threshold", 20.0, "Drift threshold percentage for alerts")
-	autoRebalance    = flag.Bool("auto-rebalance", false, "Enable automatic rebalancing (requires bridge config)")
-	ethRPC           = flag.String("eth-rpc", "", "Ethereum RPC URL for bridging (or use ETH_RPC_URL env)")
-	crossChainArb    = flag.Bool("cross-chain", false, "Enable cross-chain arbitrage detection")
+	configPath          = flag.String("config", "", "Path to configuration file (JSON)")
+	outputFormat        = flag.String("format", "text", "Output format: text, json, csv")
+	verbose             = flag.Bool("verbose", true, "Enable verbose output")
+	dryRun              = flag.Bool("dry-run", true, "Dry run mode (default: true for safety)")
+	maxTradeSize        = flag.Float64("max-trade", 10.0, "Maximum trade size in quote currency")
+	minProfit           = flag.Int("min-profit", 20, "Minimum profit in basis points")
+	inventoryCheck      = flag.Bool("inventory", true, "Enable inventory monitoring")
+	driftThreshold      = flag.Float64("drift-threshold", 20.0, "Drift threshold percentage for alerts")
+	autoRebalance       = flag.Bool("auto-rebalance", false, "Enable automatic rebalancing (requires bridge config)")
+	ethRPC              = flag.String("eth-rpc", "", "Ethereum RPC URL for bridging (or use ETH_RPC_URL env)")
+	crossChainArb       = flag.Bool("cross-chain", false, "Enable cross-chain arbitrage detection")
 	crossChainMinSpread = flag.Float64("cross-chain-min-spread", 3.0, "Minimum spread % for cross-chain arb")
+	logFile             = flag.String("log", "bot-trader.log", "Log file path (empty to disable file logging)")
 )
+
+// logWriter is a global writer that outputs to both stdout and log file
+var logWriter io.Writer
 
 func main() {
 	flag.Parse()
 
+	// Set up logging to both stdout and file
+	var logFileHandle *os.File
+	if *logFile != "" {
+		var err error
+		logFileHandle, err = os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to open log file %s: %v\n", *logFile, err)
+			logWriter = os.Stdout
+		} else {
+			// Write to both stdout and log file
+			logWriter = io.MultiWriter(os.Stdout, logFileHandle)
+			log.SetOutput(logWriter)
+		}
+	} else {
+		logWriter = os.Stdout
+	}
+
+	// Ensure log file is closed on exit
+	defer func() {
+		if logFileHandle != nil {
+			logFileHandle.Close()
+		}
+	}()
+
 	// Print banner
 	printBanner()
+
+	if *logFile != "" && logFileHandle != nil {
+		logf("Logging to file: %s\n", *logFile)
+	}
 
 	// Load configuration
 	var cfg *config.Config
@@ -74,7 +108,7 @@ func main() {
 		cancel()
 	}()
 
-	// Create reporter
+	// Create reporter (outputs to both stdout and log file)
 	format := reporter.FormatText
 	switch *outputFormat {
 	case "json":
@@ -82,7 +116,7 @@ func main() {
 	case "csv":
 		format = reporter.FormatCSV
 	}
-	rep := reporter.NewReporter(os.Stdout, format, cfg.Verbose)
+	rep := reporter.NewReporter(logWriter, format, cfg.Verbose)
 
 	// Create executor registry
 	registry := executor.NewExecutorRegistry()
@@ -131,9 +165,9 @@ func main() {
 	})
 
 	if slackNotifier.IsEnabled() {
-		fmt.Println("Slack notifications enabled")
+		logln("Slack notifications enabled")
 		if err := slackNotifier.SendTestMessage(); err != nil {
-			fmt.Printf("Warning: Failed to send Slack test message: %v\n", err)
+			logf("Warning: Failed to send Slack test message: %v\n", err)
 		}
 	}
 
@@ -149,7 +183,7 @@ func main() {
 		// Set up drift alert callback
 		invManager.SetDriftAlertCallback(func(status *inventory.DriftStatus) {
 			if *verbose {
-				fmt.Printf("\n[DRIFT ALERT] %s: %.1f%% drift detected\n", status.Currency, status.MaxDriftPct)
+				logf("\n[DRIFT ALERT] %s: %.1f%% drift detected\n", status.Currency, status.MaxDriftPct)
 			}
 
 			// Send Slack notification
@@ -160,14 +194,14 @@ func main() {
 				IsCritical:     status.MaxDriftPct >= invConfig.CriticalDriftPct,
 			}
 			if err := slackNotifier.NotifyDriftAlert(alert); err != nil {
-				fmt.Printf("  [SLACK ERROR] %v\n", err)
+				logf("  [SLACK ERROR] %v\n", err)
 			}
 		})
 
 		// Set up rebalance recommendation callback
 		invManager.SetRebalanceCallback(func(rec *inventory.RebalanceRecommendation) {
 			if *verbose {
-				fmt.Printf("\n[REBALANCE] %s: Bridge %s from %s to %s\n",
+				logf("\n[REBALANCE] %s: Bridge %s from %s to %s\n",
 					rec.Currency, rec.Amount.Text('f', 4), rec.FromExchange, rec.ToExchange)
 			}
 
@@ -188,11 +222,11 @@ func main() {
 				Reason:       rec.Reason,
 			}
 			if err := slackNotifier.NotifyRebalanceRecommendation(slackRec); err != nil {
-				fmt.Printf("  [SLACK ERROR] %v\n", err)
+				logf("  [SLACK ERROR] %v\n", err)
 			}
 		})
 
-		fmt.Printf("Inventory monitoring enabled (drift threshold: %.1f%%)\n", *driftThreshold)
+		logf("Inventory monitoring enabled (drift threshold: %.1f%%)\n", *driftThreshold)
 	}
 
 	// Create auto-rebalancer if enabled
@@ -201,7 +235,7 @@ func main() {
 		// Get private key for bridge operations
 		privateKey := os.Getenv("GSWAP_PRIVATE_KEY")
 		if privateKey == "" {
-			fmt.Println("Warning: Auto-rebalance enabled but GSWAP_PRIVATE_KEY not set")
+			logln("Warning: Auto-rebalance enabled but GSWAP_PRIVATE_KEY not set")
 		} else {
 			// Get Ethereum RPC URL
 			ethRPCURL := *ethRPC
@@ -230,7 +264,7 @@ func main() {
 				SolanaBridgeProgramID: solanaBridgeProgramID,
 			})
 			if err != nil {
-				fmt.Printf("Warning: Failed to create bridge executor: %v\n", err)
+				logf("Warning: Failed to create bridge executor: %v\n", err)
 			} else {
 				// Create rebalancer config from settings
 				rebalConfig := &inventory.RebalancerConfig{
@@ -250,9 +284,9 @@ func main() {
 				// Set up Slack callbacks for auto-rebalance events
 				autoRebalancer.SetBridgeStartedCallback(func(rec *inventory.RebalanceRecommendation, result *bridge.BridgeResult) {
 					if *verbose {
-						fmt.Printf("\n[AUTO-REBALANCE] Started: %s %s from %s to %s\n",
+						logf("\n[AUTO-REBALANCE] Started: %s %s from %s to %s\n",
 							rec.Amount.Text('f', 4), rec.Currency, rec.FromExchange, rec.ToExchange)
-						fmt.Printf("  Transaction: %s\n", result.TransactionID)
+						logf("  Transaction: %s\n", result.TransactionID)
 					}
 					slackNotifier.NotifyAutoRebalanceStarted(&notifier.AutoRebalanceStarted{
 						Currency:      rec.Currency,
@@ -266,7 +300,7 @@ func main() {
 
 				autoRebalancer.SetBridgeCompletedCallback(func(rec *inventory.RebalanceRecommendation, result *bridge.BridgeResult) {
 					if *verbose {
-						fmt.Printf("\n[AUTO-REBALANCE] Completed: %s %s\n", rec.Amount.Text('f', 4), rec.Currency)
+						logf("\n[AUTO-REBALANCE] Completed: %s %s\n", rec.Amount.Text('f', 4), rec.Currency)
 					}
 					feeStr := "N/A"
 					if result.Fee != nil {
@@ -285,7 +319,7 @@ func main() {
 
 				autoRebalancer.SetBridgeFailedCallback(func(rec *inventory.RebalanceRecommendation, err error) {
 					if *verbose {
-						fmt.Printf("\n[AUTO-REBALANCE] Failed: %s %s - %v\n",
+						logf("\n[AUTO-REBALANCE] Failed: %s %s - %v\n",
 							rec.Amount.Text('f', 4), rec.Currency, err)
 					}
 					slackNotifier.NotifyAutoRebalanceFailed(&notifier.AutoRebalanceFailed{
@@ -300,7 +334,7 @@ func main() {
 
 				autoRebalancer.SetCircuitOpenCallback(func(failures int) {
 					if *verbose {
-						fmt.Printf("\n[CIRCUIT BREAKER] OPEN - %d consecutive failures\n", failures)
+						logf("\n[CIRCUIT BREAKER] OPEN - %d consecutive failures\n", failures)
 					}
 					slackNotifier.NotifyCircuitBreakerAlert(&notifier.CircuitBreakerAlert{
 						State:            "OPEN",
@@ -311,7 +345,7 @@ func main() {
 
 				autoRebalancer.SetCircuitCloseCallback(func() {
 					if *verbose {
-						fmt.Println("\n[CIRCUIT BREAKER] CLOSED - resuming auto-rebalance")
+						logln("\n[CIRCUIT BREAKER] CLOSED - resuming auto-rebalance")
 					}
 					slackNotifier.NotifyCircuitBreakerAlert(&notifier.CircuitBreakerAlert{
 						State:            "CLOSED",
@@ -322,16 +356,16 @@ func main() {
 
 				// Start the auto-rebalancer
 				if err := autoRebalancer.Start(ctx); err != nil {
-					fmt.Printf("Warning: Failed to start auto-rebalancer: %v\n", err)
+					logf("Warning: Failed to start auto-rebalancer: %v\n", err)
 				} else {
-					fmt.Println("Auto-rebalancing enabled")
+					logln("Auto-rebalancing enabled")
 					if ethRPCURL != "" {
-						fmt.Println("  Bidirectional bridging available (GalaChain <-> Ethereum)")
+						logln("  Bidirectional bridging available (GalaChain <-> Ethereum)")
 					} else {
-						fmt.Println("  GalaChain -> Ethereum bridging only (set ETH_RPC_URL for bidirectional)")
+						logln("  GalaChain -> Ethereum bridging only (set ETH_RPC_URL for bidirectional)")
 					}
 					if cfg.Solana.Enabled && cfg.Solana.PrivateKey != "" {
-						fmt.Println("  Solana bridging available (GalaChain <-> Solana)")
+						logln("  Solana bridging available (GalaChain <-> Solana)")
 					}
 				}
 			}
@@ -365,14 +399,14 @@ func main() {
 		}
 
 		crossChainDetector = arbitrage.NewCrossChainArbitrageDetector(ccConfig, arbitrage.NewVolatilityModel(volatilityConfig))
-		fmt.Printf("Cross-chain arbitrage detection enabled (min spread: %.1f%%)\n", *crossChainMinSpread)
+		logf("Cross-chain arbitrage detection enabled (min spread: %.1f%%)\n", *crossChainMinSpread)
 		if cfg.CrossChainArbitrage.BridgeEnabled {
-			fmt.Println("  Bridge execution: ENABLED")
+			logln("  Bridge execution: ENABLED")
 		} else {
-			fmt.Println("  Bridge execution: DISABLED (detection only)")
+			logln("  Bridge execution: DISABLED (detection only)")
 		}
 		if cfg.Solana.Enabled {
-			fmt.Println("  Solana cross-chain arbitrage enabled (GalaChain <-> Solana)")
+			logln("  Solana cross-chain arbitrage enabled (GalaChain <-> Solana)")
 		}
 	}
 
@@ -382,14 +416,14 @@ func main() {
 
 		// Notify Slack about opportunity
 		if err := slackNotifier.NotifyArbitrageOpportunity(opp); err != nil {
-			fmt.Printf("  [SLACK ERROR] %v\n", err)
+			logf("  [SLACK ERROR] %v\n", err)
 		}
 
 		// Attempt execution if conditions are met
 		if opp.NetProfitBps >= *minProfit {
 			execution, err := coordinator.ExecuteOpportunity(ctx, opp)
 			if err != nil {
-				fmt.Printf("  [EXEC ERROR] %v\n", err)
+				logf("  [EXEC ERROR] %v\n", err)
 				return
 			}
 
@@ -408,19 +442,19 @@ func main() {
 				Error:        execution.Error,
 			}
 			if err := slackNotifier.NotifyTradeExecution(tradeNotif); err != nil {
-				fmt.Printf("  [SLACK ERROR] %v\n", err)
+				logf("  [SLACK ERROR] %v\n", err)
 			}
 
 			if execution.DryRun {
-				fmt.Printf("  [DRY RUN] Would execute: %s -> %s, estimated profit: %s\n",
+				logf("  [DRY RUN] Would execute: %s -> %s, estimated profit: %s\n",
 					opp.BuyExchange, opp.SellExchange,
 					execution.NetProfit.Text('f', 4))
 			} else if execution.Success {
-				fmt.Printf("  [EXECUTED] Profit: %s, Fees: %s\n",
+				logf("  [EXECUTED] Profit: %s, Fees: %s\n",
 					execution.NetProfit.Text('f', 4),
 					execution.TotalFees.Text('f', 4))
 			} else {
-				fmt.Printf("  [SKIPPED] %s\n", execution.Error)
+				logf("  [SKIPPED] %s\n", execution.Error)
 			}
 		}
 	})
@@ -431,24 +465,24 @@ func main() {
 
 		// Notify Slack about chain opportunity
 		if err := slackNotifier.NotifyChainArbitrageOpportunity(opp); err != nil {
-			fmt.Printf("  [SLACK ERROR] %v\n", err)
+			logf("  [SLACK ERROR] %v\n", err)
 		}
 
 		if opp.NetProfitBps >= *minProfit {
 			execution, err := coordinator.ExecuteChainOpportunity(ctx, opp)
 			if err != nil {
-				fmt.Printf("  [CHAIN EXEC ERROR] %v\n", err)
+				logf("  [CHAIN EXEC ERROR] %v\n", err)
 				return
 			}
 
 			if execution.DryRun {
-				fmt.Printf("  [CHAIN DRY RUN] Would execute: %v, estimated profit: %s\n",
+				logf("  [CHAIN DRY RUN] Would execute: %v, estimated profit: %s\n",
 					opp.Chain, execution.NetProfit.Text('f', 4))
 			} else if execution.Success {
-				fmt.Printf("  [CHAIN EXECUTED] Profit: %s\n",
+				logf("  [CHAIN EXECUTED] Profit: %s\n",
 					execution.NetProfit.Text('f', 4))
 			} else {
-				fmt.Printf("  [CHAIN SKIPPED] %s\n", execution.Error)
+				logf("  [CHAIN SKIPPED] %s\n", execution.Error)
 			}
 		}
 	})
@@ -479,7 +513,7 @@ func main() {
 				if *verbose {
 					report := arbitrage.FormatOpportunityReport(ccOpp)
 					if report != nil {
-						fmt.Println(report.FormatReportString())
+						logln(report.FormatReportString())
 					}
 				}
 
@@ -517,42 +551,42 @@ func main() {
 	// Get pairs to subscribe
 	pairs := getPairs(cfg)
 	if len(pairs) == 0 {
-		fmt.Fprintln(os.Stderr, "No pairs configured")
+		logln("No pairs configured")
 		os.Exit(1)
 	}
 
-	fmt.Printf("Subscribing to %d pairs...\n", len(pairs))
+	logf("Subscribing to %d pairs...\n", len(pairs))
 	for _, pair := range pairs {
-		fmt.Printf("  - %s\n", pair)
+		logf("  - %s\n", pair)
 	}
-	fmt.Println()
+	logln()
 
 	// Start the aggregator
 	if err := aggregator.Start(ctx, pairs); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start aggregator: %v\n", err)
+		logf("Failed to start aggregator: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Wait for connections
-	fmt.Println("Connecting to exchanges...")
+	logln("Connecting to exchanges...")
 	time.Sleep(2 * time.Second)
 
 	// Print connection status
 	status := aggregator.GetConnectionStatus()
-	fmt.Println("\nConnection status:")
+	logln("\nConnection status:")
 	for name, state := range status {
-		fmt.Printf("  - %s: %s\n", name, state)
+		logf("  - %s: %s\n", name, state)
 	}
-	fmt.Println()
+	logln()
 
-	fmt.Println("Listening for arbitrage opportunities...")
+	logln("Listening for arbitrage opportunities...")
 	if *dryRun {
-		fmt.Println("** DRY RUN MODE - No actual trades will be executed **")
+		logln("** DRY RUN MODE - No actual trades will be executed **")
 	} else {
-		fmt.Println("** LIVE TRADING MODE - Real trades will be executed **")
+		logln("** LIVE TRADING MODE - Real trades will be executed **")
 	}
-	fmt.Println("Press Ctrl+C to stop")
-	fmt.Println()
+	logln("Press Ctrl+C to stop")
+	logln()
 
 	// Status ticker
 	statusTicker := time.NewTicker(60 * time.Second)
@@ -568,10 +602,10 @@ func main() {
 		go func() {
 			time.Sleep(5 * time.Second) // Wait for executors to be ready
 			if _, err := invManager.CollectSnapshot(ctx); err != nil {
-				fmt.Printf("Warning: Initial inventory snapshot failed: %v\n", err)
+				logf("Warning: Initial inventory snapshot failed: %v\n", err)
 			} else if *verbose {
-				fmt.Println("\nInitial inventory snapshot collected")
-				fmt.Println(invManager.FormatSnapshotReport())
+				logln("\nInitial inventory snapshot collected")
+				logln(invManager.FormatSnapshotReport())
 			}
 		}()
 	}
@@ -586,14 +620,14 @@ func main() {
 
 			// Print final inventory status
 			if invManager != nil {
-				fmt.Println("\nFinal Inventory Status:")
-				fmt.Println(invManager.FormatDriftReport())
+				logln("\nFinal Inventory Status:")
+				logln(invManager.FormatDriftReport())
 			}
 
 			// Print auto-rebalancer status
 			if autoRebalancer != nil {
-				fmt.Println("\nAuto-Rebalancer Status:")
-				fmt.Println(autoRebalancer.FormatStatusReport())
+				logln("\nAuto-Rebalancer Status:")
+				logln(autoRebalancer.FormatStatusReport())
 				autoRebalancer.Stop()
 			}
 
@@ -603,7 +637,7 @@ func main() {
 			// Close executors
 			registry.Close()
 
-			fmt.Println("Bot stopped.")
+			logln("Bot stopped.")
 			return
 
 		case <-statusTicker.C:
@@ -618,14 +652,14 @@ func main() {
 			// Periodic inventory check
 			if invManager != nil {
 				if _, err := invManager.CollectSnapshot(ctx); err != nil {
-					fmt.Printf("Warning: Inventory snapshot failed: %v\n", err)
+					logf("Warning: Inventory snapshot failed: %v\n", err)
 				} else {
 					// Check drift and generate recommendations
 					invManager.CheckDrift(ctx)
 					recommendations := invManager.GenerateRebalanceRecommendations()
 
 					if *verbose && len(recommendations) > 0 {
-						fmt.Println(invManager.FormatRecommendationsReport(recommendations))
+						logln(invManager.FormatRecommendationsReport(recommendations))
 					}
 				}
 			}
@@ -635,22 +669,22 @@ func main() {
 
 // printBanner prints the application banner.
 func printBanner() {
-	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════════════════════╗")
-	fmt.Println("║       GSwap Arbitrage Bot - Trading Mode                  ║")
-	fmt.Println("║                                                           ║")
-	fmt.Println("║   Real-time arbitrage detection AND execution             ║")
-	fmt.Println("╚═══════════════════════════════════════════════════════════╝")
-	fmt.Println()
+	logln()
+	logln("╔═══════════════════════════════════════════════════════════╗")
+	logln("║       GSwap Arbitrage Bot - Trading Mode                  ║")
+	logln("║                                                           ║")
+	logln("║   Real-time arbitrage detection AND execution             ║")
+	logln("╚═══════════════════════════════════════════════════════════╝")
+	logln()
 }
 
 // printConfig prints the current configuration.
 func printConfig(cfg *config.Config, coord *executor.ArbitrageCoordinator) {
-	fmt.Println("Configuration:")
-	fmt.Printf("  - Min spread: %d bps (%.2f%%)\n", cfg.Arbitrage.MinSpreadBps, float64(cfg.Arbitrage.MinSpreadBps)/100)
-	fmt.Printf("  - Min net profit: %d bps (%.2f%%)\n", cfg.Arbitrage.MinNetProfitBps, float64(cfg.Arbitrage.MinNetProfitBps)/100)
-	fmt.Printf("  - Dry run: %v\n", coord.IsDryRun())
-	fmt.Println()
+	logln("Configuration:")
+	logf("  - Min spread: %d bps (%.2f%%)\n", cfg.Arbitrage.MinSpreadBps, float64(cfg.Arbitrage.MinSpreadBps)/100)
+	logf("  - Min net profit: %d bps (%.2f%%)\n", cfg.Arbitrage.MinNetProfitBps, float64(cfg.Arbitrage.MinNetProfitBps)/100)
+	logf("  - Dry run: %v\n", coord.IsDryRun())
+	logln()
 }
 
 // setupExecutors initializes trade executors based on configuration.
@@ -665,29 +699,29 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 		// GSwap is a DEX on GalaChain - use native executor
 		if ex.ID == "gswap" {
 			if ex.PrivateKey == "" {
-				fmt.Printf("Skipping GSwap executor: Private key not configured\n")
+				logf("Skipping GSwap executor: Private key not configured\n")
 				continue
 			}
 			gswapExec, err := executor.NewGSwapExecutor(ex.PrivateKey, ex.WalletAddress)
 			if err != nil {
-				fmt.Printf("Warning: Failed to create GSwap executor: %v\n", err)
+				logf("Warning: Failed to create GSwap executor: %v\n", err)
 				lastErr = err
 				continue
 			}
 			if err := gswapExec.Initialize(ctx); err != nil {
-				fmt.Printf("Warning: Failed to initialize GSwap executor: %v\n", err)
+				logf("Warning: Failed to initialize GSwap executor: %v\n", err)
 				lastErr = err
 				continue
 			}
 			registry.Register(gswapExec)
-			fmt.Printf("Initialized GSwap executor (wallet: %s)\n", gswapExec.GetWalletAddress())
+			logf("Initialized GSwap executor (wallet: %s)\n", gswapExec.GetWalletAddress())
 			continue
 		}
 
 		// Use CCXT for all supported CEX exchanges
 		if executor.SupportedCCXTExchanges[strings.ToLower(ex.ID)] {
 			if ex.APIKey == "" || ex.Secret == "" {
-				fmt.Printf("Skipping %s executor: API credentials not configured\n", ex.ID)
+				logf("Skipping %s executor: API credentials not configured\n", ex.ID)
 				continue
 			}
 
@@ -701,26 +735,26 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 
 			ccxtExec, err := executor.NewCCXTExecutor(ccxtConfig)
 			if err != nil {
-				fmt.Printf("Warning: Failed to create %s executor: %v\n", ex.ID, err)
+				logf("Warning: Failed to create %s executor: %v\n", ex.ID, err)
 				lastErr = err
 				continue
 			}
 			if err := ccxtExec.Initialize(ctx); err != nil {
-				fmt.Printf("Warning: Failed to initialize %s executor: %v\n", ex.ID, err)
+				logf("Warning: Failed to initialize %s executor: %v\n", ex.ID, err)
 				lastErr = err
 				continue
 			}
 			registry.Register(ccxtExec)
-			fmt.Printf("Initialized %s executor (via CCXT)\n", ex.ID)
+			logf("Initialized %s executor (via CCXT)\n", ex.ID)
 		} else {
-			fmt.Printf("Skipping %s: not a supported CCXT exchange\n", ex.ID)
+			logf("Skipping %s: not a supported CCXT exchange\n", ex.ID)
 		}
 	}
 
 	// Add Solana/Jupiter executor if enabled for trading
 	if cfg.Solana.Enabled && cfg.Solana.TradingEnabled {
 		if cfg.Solana.PrivateKey == "" || cfg.Solana.WalletAddress == "" {
-			fmt.Printf("Skipping Jupiter executor: Solana credentials not configured\n")
+			logf("Skipping Jupiter executor: Solana credentials not configured\n")
 		} else {
 			solanaConfig := &executor.SolanaExecutorConfig{
 				RPCURL:         cfg.Solana.RPCURL,
@@ -733,14 +767,14 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 
 			solanaExec, err := executor.NewSolanaExecutor(solanaConfig)
 			if err != nil {
-				fmt.Printf("Warning: Failed to create Jupiter executor: %v\n", err)
+				logf("Warning: Failed to create Jupiter executor: %v\n", err)
 				lastErr = err
 			} else if err := solanaExec.Initialize(ctx); err != nil {
-				fmt.Printf("Warning: Failed to initialize Jupiter executor: %v\n", err)
+				logf("Warning: Failed to initialize Jupiter executor: %v\n", err)
 				lastErr = err
 			} else {
 				registry.Register(solanaExec)
-				fmt.Printf("Initialized Jupiter executor (wallet: %s)\n", solanaExec.GetWalletAddress())
+				logf("Initialized Jupiter executor (wallet: %s)\n", solanaExec.GetWalletAddress())
 			}
 		}
 	}
@@ -750,20 +784,20 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 
 // printExecutorStatus prints the status of all executors.
 func printExecutorStatus(registry *executor.ExecutorRegistry) {
-	fmt.Println("\nExecutor status:")
+	logln("\nExecutor status:")
 	executors := registry.GetAll()
 	if len(executors) == 0 {
-		fmt.Println("  No executors configured (detection only mode)")
+		logln("  No executors configured (detection only mode)")
 	} else {
 		for name, exec := range executors {
 			status := "not ready"
 			if exec.IsReady() {
 				status = "ready"
 			}
-			fmt.Printf("  - %s (%s): %s\n", name, exec.Type(), status)
+			logf("  - %s (%s): %s\n", name, exec.Type(), status)
 		}
 	}
-	fmt.Println()
+	logln()
 }
 
 // setupWebSocketProviders adds WebSocket providers based on configuration.
@@ -799,7 +833,7 @@ func setupWebSocketProviders(agg *websocket.PriceAggregator, cfg *config.Config)
 		}
 
 		agg.AddProvider(websocket.NewJupiterPollerProvider(jupiterConfig))
-		fmt.Printf("Added Jupiter polling provider (%v interval)\n", pollInterval)
+		logf("Added Jupiter polling provider (%v interval)\n", pollInterval)
 	}
 }
 
@@ -822,29 +856,29 @@ func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordi
 	stats := rep.GetStats()
 	execStats := coord.GetStats()
 
-	fmt.Println()
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Printf("[%s] Status Update\n", time.Now().Format("15:04:05"))
-	fmt.Printf("  Uptime: %s\n", time.Since(stats.StartTime).Round(time.Second))
-	fmt.Printf("  Opportunities found: %d\n", stats.OpportunitiesFound)
-	fmt.Printf("  Executions attempted: %d (successful: %d, failed: %d)\n",
+	logln()
+	logln(strings.Repeat("-", 60))
+	logf("[%s] Status Update\n", time.Now().Format("15:04:05"))
+	logf("  Uptime: %s\n", time.Since(stats.StartTime).Round(time.Second))
+	logf("  Opportunities found: %d\n", stats.OpportunitiesFound)
+	logf("  Executions attempted: %d (successful: %d, failed: %d)\n",
 		execStats.ExecutedTrades, execStats.SuccessfulTrades, execStats.FailedTrades)
-	fmt.Printf("  Skipped: insufficient balance=%d, below min profit=%d, rate limited=%d, dry run=%d\n",
+	logf("  Skipped: insufficient balance=%d, below min profit=%d, rate limited=%d, dry run=%d\n",
 		execStats.SkippedInsufficientBalance, execStats.SkippedBelowMinProfit,
 		execStats.SkippedRateLimited, execStats.SkippedDryRun)
 
 	if execStats.TotalProfit != nil && execStats.TotalProfit.Sign() != 0 {
-		fmt.Printf("  Total profit: %s\n", execStats.TotalProfit.Text('f', 4))
+		logf("  Total profit: %s\n", execStats.TotalProfit.Text('f', 4))
 	}
 
 	// Connection status
 	status := agg.GetConnectionStatus()
-	fmt.Print("  Connections: ")
+	logf("  Connections: ")
 	parts := make([]string, 0, len(status))
 	for name, state := range status {
 		parts = append(parts, fmt.Sprintf("%s=%s", name, state))
 	}
-	fmt.Println(strings.Join(parts, ", "))
+	logln(strings.Join(parts, ", "))
 
 	// Inventory status
 	if invManager != nil {
@@ -858,10 +892,10 @@ func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordi
 			}
 		}
 
-		fmt.Printf("  Inventory: %d snapshots, %d drift alerts, %d rebalances recommended\n",
+		logf("  Inventory: %d snapshots, %d drift alerts, %d rebalances recommended\n",
 			invStats.SnapshotsCollected, invStats.DriftAlertsTriggered, invStats.RebalancesRecommended)
 		if driftWarnings > 0 {
-			fmt.Printf("  [!] %d currencies with drift above threshold\n", driftWarnings)
+			logf("  [!] %d currencies with drift above threshold\n", driftWarnings)
 		}
 	}
 
@@ -878,33 +912,43 @@ func printStatus(agg *websocket.PriceAggregator, coord *executor.ArbitrageCoordi
 			rebalStatus = fmt.Sprintf("bridging %s", pending.Recommendation.Currency)
 		}
 
-		fmt.Printf("  Auto-rebalance: %s (triggered=%d, completed=%d, failed=%d)\n",
+		logf("  Auto-rebalance: %s (triggered=%d, completed=%d, failed=%d)\n",
 			rebalStatus, rebalStats.RebalancesTriggered, rebalStats.RebalancesCompleted, rebalStats.RebalancesFailed)
 	}
 
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Println()
+	logln(strings.Repeat("-", 60))
+	logln()
 }
 
 // printExecutionStats prints final execution statistics.
 func printExecutionStats(coord *executor.ArbitrageCoordinator) {
 	stats := coord.GetStats()
 
-	fmt.Println("\nExecution Statistics:")
-	fmt.Println(strings.Repeat("=", 40))
-	fmt.Printf("  Total opportunities: %d\n", stats.TotalOpportunities)
-	fmt.Printf("  Executed trades: %d\n", stats.ExecutedTrades)
-	fmt.Printf("  Successful: %d\n", stats.SuccessfulTrades)
-	fmt.Printf("  Failed: %d\n", stats.FailedTrades)
-	fmt.Printf("  Skipped (insufficient balance): %d\n", stats.SkippedInsufficientBalance)
-	fmt.Printf("  Skipped (below min profit): %d\n", stats.SkippedBelowMinProfit)
-	fmt.Printf("  Skipped (rate limited): %d\n", stats.SkippedRateLimited)
-	fmt.Printf("  Skipped (dry run): %d\n", stats.SkippedDryRun)
+	logf("\nExecution Statistics:\n")
+	logf(strings.Repeat("=", 40) + "\n")
+	logf("  Total opportunities: %d\n", stats.TotalOpportunities)
+	logf("  Executed trades: %d\n", stats.ExecutedTrades)
+	logf("  Successful: %d\n", stats.SuccessfulTrades)
+	logf("  Failed: %d\n", stats.FailedTrades)
+	logf("  Skipped (insufficient balance): %d\n", stats.SkippedInsufficientBalance)
+	logf("  Skipped (below min profit): %d\n", stats.SkippedBelowMinProfit)
+	logf("  Skipped (rate limited): %d\n", stats.SkippedRateLimited)
+	logf("  Skipped (dry run): %d\n", stats.SkippedDryRun)
 	if stats.TotalProfit != nil {
-		fmt.Printf("  Total profit: %s\n", stats.TotalProfit.Text('f', 4))
+		logf("  Total profit: %s\n", stats.TotalProfit.Text('f', 4))
 	}
 	if stats.TotalFees != nil {
-		fmt.Printf("  Total fees: %s\n", stats.TotalFees.Text('f', 4))
+		logf("  Total fees: %s\n", stats.TotalFees.Text('f', 4))
 	}
-	fmt.Println(strings.Repeat("=", 40))
+	logf(strings.Repeat("=", 40) + "\n")
+}
+
+// logf writes formatted output to both stdout and log file
+func logf(format string, args ...interface{}) {
+	fmt.Fprintf(logWriter, format, args...)
+}
+
+// logln writes a line to both stdout and log file
+func logln(args ...interface{}) {
+	fmt.Fprintln(logWriter, args...)
 }
