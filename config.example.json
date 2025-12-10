@@ -82,6 +82,23 @@
       "decimals": 6
     },
     {
+      "symbol": "USD",
+      "name": "US Dollar",
+      "decimals": 2
+    },
+    {
+      "symbol": "USDUC",
+      "name": "USD Coin (GalaChain)",
+      "decimals": 6,
+      "galachain_mint": "GUSDUC|Unit|none|none"
+    },
+    {
+      "symbol": "TRX",
+      "name": "TRON",
+      "decimals": 6,
+      "galachain_mint": "GWTRX|Unit|none|none"
+    },
+    {
       "symbol": "BTC",
       "name": "Bitcoin",
       "decimals": 8
@@ -89,7 +106,14 @@
     {
       "symbol": "SOL",
       "name": "Solana",
-      "decimals": 9
+      "decimals": 9,
+      "galachain_mint": "GSOL|Unit|none|none"      
+    },
+    {
+      "symbol": "MEW",
+      "name": "Mew",
+      "decimals": 8,
+      "galachain_mint": "GMEW|Unit|none|none"
     }
   ],
   "pairs": [
@@ -116,6 +140,30 @@
       "exchanges": ["binance", "coinbase", "kraken"],
       "enabled": true,
       "trade_size": 10
+    },
+    {
+      "pair": "USDUC/USDT",
+      "exchanges": ["kraken"],
+      "enabled": true,
+      "trade_size": 50000
+    },
+    {
+      "pair": "USDUC/USDC",
+      "exchanges": ["kraken"],
+      "enabled": true,
+      "trade_size": 50000
+    },
+    {
+      "pair": "TRX/USDT",
+      "exchanges": ["binance"],
+      "enabled": true,
+      "trade_size": 10000
+    },
+    {
+      "pair": "MEW/GALA",
+      "exchanges": ["gswap"],
+      "enabled": true,
+      "trade_size": 100000
     }
   ]
 }

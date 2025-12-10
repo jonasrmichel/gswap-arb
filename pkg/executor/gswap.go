@@ -54,11 +54,11 @@ type gswapToken struct {
 
 // gswapQuoteRequest is the request for quoting.
 type gswapQuoteRequest struct {
-	TokenIn     string `json:"tokenIn"`
-	TokenOut    string `json:"tokenOut"`
-	AmountIn    string `json:"amountIn"`
-	Fee         int    `json:"fee,omitempty"`
-	WalletAddr  string `json:"walletAddress,omitempty"`
+	TokenIn    string `json:"tokenIn"`
+	TokenOut   string `json:"tokenOut"`
+	AmountIn   string `json:"amountIn"`
+	Fee        int    `json:"fee,omitempty"`
+	WalletAddr string `json:"walletAddress,omitempty"`
 }
 
 // gswapQuoteResponse is the response from quoting API.
@@ -75,16 +75,16 @@ type gswapQuoteData struct {
 
 // gswapSwapRequest is the request for executing a swap.
 type gswapSwapRequest struct {
-	TokenIn           string `json:"tokenIn"`
-	TokenOut          string `json:"tokenOut"`
-	Fee               int    `json:"fee"`
-	AmountIn          string `json:"amountIn,omitempty"`
-	AmountOut         string `json:"amountOut,omitempty"`
-	AmountInMaximum   string `json:"amountInMaximum,omitempty"`
-	AmountOutMinimum  string `json:"amountOutMinimum,omitempty"`
-	Deadline          int64  `json:"deadline"`
-	WalletAddress     string `json:"walletAddress"`
-	Signature         string `json:"signature,omitempty"`
+	TokenIn          string `json:"tokenIn"`
+	TokenOut         string `json:"tokenOut"`
+	Fee              int    `json:"fee"`
+	AmountIn         string `json:"amountIn,omitempty"`
+	AmountOut        string `json:"amountOut,omitempty"`
+	AmountInMaximum  string `json:"amountInMaximum,omitempty"`
+	AmountOutMinimum string `json:"amountOutMinimum,omitempty"`
+	Deadline         int64  `json:"deadline"`
+	WalletAddress    string `json:"walletAddress"`
+	Signature        string `json:"signature,omitempty"`
 }
 
 // gswapSwapResponse is the response from swap API.
@@ -154,16 +154,20 @@ func NewGSwapExecutor(privateKeyHex, walletAddress string) (*GSwapExecutor, erro
 // initializeTokens sets up known GalaChain tokens.
 func (g *GSwapExecutor) initializeTokens() {
 	g.tokens = map[string]gswapToken{
-		"GALA": {Symbol: "GALA", GalaChainKey: "GALA|Unit|none|none", Decimals: 8},
-		"GWETH": {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 8},
-		"GUSDC": {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 8},
-		"GUSDT": {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 8},
-		"GSOL": {Symbol: "GSOL", GalaChainKey: "GSOL|Unit|none|none", Decimals: 9},
-		"GWBTC": {Symbol: "GWBTC", GalaChainKey: "GWBTC|Unit|none|none", Decimals: 8},
+		"GALA":   {Symbol: "GALA", GalaChainKey: "GALA|Unit|none|none", Decimals: 8},
+		"GWETH":  {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
+		"GUSDC":  {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
+		"GUSDT":  {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
+		"GUSDUC": {Symbol: "GUSDUC", GalaChainKey: "GUSDUC|Unit|none|none", Decimals: 6},
+		"GSOL":   {Symbol: "GSOL", GalaChainKey: "GSOL|Unit|none|none", Decimals: 9},
+		"GWBTC":  {Symbol: "GWBTC", GalaChainKey: "GWBTC|Unit|none|none", Decimals: 8},
+		"GMEW":   {Symbol: "GMEW", GalaChainKey: "GMEW|Unit|none|none", Decimals: 8},
 		// Aliases
-		"ETH": {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 8},
-		"USDC": {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 8},
-		"USDT": {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 8},
+		"ETH":   {Symbol: "GWETH", GalaChainKey: "GWETH|Unit|none|none", Decimals: 18},
+		"USDC":  {Symbol: "GUSDC", GalaChainKey: "GUSDC|Unit|none|none", Decimals: 6},
+		"USDT":  {Symbol: "GUSDT", GalaChainKey: "GUSDT|Unit|none|none", Decimals: 6},
+		"USDUC": {Symbol: "GUSDUC", GalaChainKey: "GUSDUC|Unit|none|none", Decimals: 6},
+		"MEW":   {Symbol: "GMEW", GalaChainKey: "GMEW|Unit|none|none", Decimals: 8},
 	}
 }
 

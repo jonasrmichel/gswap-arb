@@ -19,12 +19,13 @@ import (
 const (
 	// GalaChain API endpoints
 	compositePoolAPI = "https://gateway-mainnet.galachain.com/api/asset/dexv3-contract/GetCompositePool"
+	quotingAPI       = "https://gateway-mainnet.galachain.com/api/asset/dexv3-contract/QuoteExactAmount"
 	dexBackendAPI    = "https://dex-backend-prod1.defi.gala.com"
 
 	// Fee tiers (basis points)
-	FeeTier005  = 500   // 0.05%
-	FeeTier030  = 3000  // 0.30%
-	FeeTier100  = 10000 // 1.00%
+	FeeTier005 = 500   // 0.05%
+	FeeTier030 = 3000  // 0.30%
+	FeeTier100 = 10000 // 1.00%
 
 	// Cache settings
 	priceCacheDuration = 30 * time.Second
@@ -33,10 +34,10 @@ const (
 
 // GSwapProvider implements the PriceProvider interface for GalaChain/GSwap.
 type GSwapProvider struct {
-	client     *http.Client
-	tokens     map[string]TokenInfo
-	pairs      []types.TradingPair
-	fees       *types.FeeStructure
+	client *http.Client
+	tokens map[string]TokenInfo
+	pairs  []types.TradingPair
+	fees   *types.FeeStructure
 
 	// Cache
 	priceCache   map[string]*cachedQuote
@@ -45,9 +46,9 @@ type GSwapProvider struct {
 
 // TokenInfo holds GalaChain-specific token information.
 type TokenInfo struct {
-	Symbol       string
+	Symbol        string
 	GalaChainMint string // Format: "SYMBOL|Unit|none|none"
-	Decimals     int
+	Decimals      int
 }
 
 type cachedQuote struct {
@@ -55,11 +56,20 @@ type cachedQuote struct {
 	timestamp time.Time
 }
 
+// QuoteExactAmountRequest is the request body for QuoteExactAmount API.
+type QuoteExactAmountRequest struct {
+	Token0     TokenClassKey `json:"token0"`
+	Token1     TokenClassKey `json:"token1"`
+	ZeroForOne bool          `json:"zeroForOne"`
+	Fee        int           `json:"fee"`
+	Amount     string        `json:"amount"`
+}
+
 // CompositePoolRequest is the request body for GetCompositePool API.
 type CompositePoolRequest struct {
-	Token0ClassKey TokenClassKey `json:"token0ClassKey"`
-	Token1ClassKey TokenClassKey `json:"token1ClassKey"`
-	Fee            int           `json:"fee"`
+	Token0 TokenClassKey `json:"token0"`
+	Token1 TokenClassKey `json:"token1"`
+	Fee    int           `json:"fee"`
 }
 
 // TokenClassKey represents a GalaChain token identifier.
@@ -75,12 +85,32 @@ type CompositePoolResponse struct {
 	Data *CompositePoolData `json:"Data"`
 }
 
+// QuoteResponse is the response from QuoteExactAmount.
+type QuoteResponse struct {
+	Status int        `json:"Status"`
+	Data   *QuoteData `json:"Data"`
+}
+
+// QuoteData contains the swap amounts and price.
+type QuoteData struct {
+	Amount0          string `json:"amount0"`
+	Amount1          string `json:"amount1"`
+	CurrentSqrtPrice string `json:"currentSqrtPrice"`
+	NewSqrtPrice     string `json:"newSqrtPrice,omitempty"`
+}
+
+type quoteResult struct {
+	amount0   *big.Float
+	amount1   *big.Float
+	sqrtPrice *big.Float
+}
+
 type CompositePoolData struct {
-	Pool          *PoolData              `json:"pool"`
-	Token0Balance *TokenBalance          `json:"token0Balance"`
-	Token1Balance *TokenBalance          `json:"token1Balance"`
-	Token0Decimals int                   `json:"token0Decimals"`
-	Token1Decimals int                   `json:"token1Decimals"`
+	Pool           *PoolData     `json:"pool"`
+	Token0Balance  *TokenBalance `json:"token0Balance"`
+	Token1Balance  *TokenBalance `json:"token1Balance"`
+	Token0Decimals int           `json:"token0Decimals"`
+	Token1Decimals int           `json:"token1Decimals"`
 }
 
 type PoolData struct {
@@ -136,26 +166,36 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 		"GWETH": {
 			Symbol:        "GWETH",
 			GalaChainMint: "GWETH|Unit|none|none",
-			Decimals:      8,
+			Decimals:      18,
 		},
 		"GUSDC": {
 			Symbol:        "GUSDC",
 			GalaChainMint: "GUSDC|Unit|none|none",
-			Decimals:      8,
+			Decimals:      6,
 		},
 		"GUSDT": {
 			Symbol:        "GUSDT",
 			GalaChainMint: "GUSDT|Unit|none|none",
-			Decimals:      8,
+			Decimals:      6,
+		},
+		"GUSDUC": {
+			Symbol:        "GUSDUC",
+			GalaChainMint: "GUSDUC|Unit|none|none",
+			Decimals:      6,
 		},
 		"GSOL": {
 			Symbol:        "GSOL",
 			GalaChainMint: "GSOL|Unit|none|none",
 			Decimals:      9,
 		},
-		"GBTC": {
-			Symbol:        "GBTC",
+		"GWBTC": {
+			Symbol:        "GWBTC",
 			GalaChainMint: "GWBTC|Unit|none|none",
+			Decimals:      8,
+		},
+		"GMEW": {
+			Symbol:        "GMEW",
+			GalaChainMint: "GMEW|Unit|none|none",
 			Decimals:      8,
 		},
 	}
@@ -166,8 +206,10 @@ func (p *GSwapProvider) Initialize(ctx context.Context) error {
 		{Base: types.Token{Symbol: "GUSDC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GUSDC/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GUSDT"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GUSDT/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GSOL"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GSOL/GALA", Exchange: "gswap"},
-		{Base: types.Token{Symbol: "GBTC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GBTC/GALA", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "GWBTC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GWBTC/GALA", Exchange: "gswap"},
 		{Base: types.Token{Symbol: "GWETH"}, Quote: types.Token{Symbol: "GUSDC"}, Symbol: "GWETH/GUSDC", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "GMEW"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GMEW/GALA", Exchange: "gswap"},
+		{Base: types.Token{Symbol: "GUSDUC"}, Quote: types.Token{Symbol: "GALA"}, Symbol: "GUSDUC/GALA", Exchange: "gswap"},
 	}
 
 	return nil
@@ -180,6 +222,9 @@ func (p *GSwapProvider) GetSupportedPairs(ctx context.Context) ([]types.TradingP
 
 // GetQuote fetches a price quote for a trading pair.
 func (p *GSwapProvider) GetQuote(ctx context.Context, pair string) (*types.PriceQuote, error) {
+	// Translate common CEX-style pair names (e.g., GALA/USDC) to GSwap-native wrapped pairs.
+	pair = mapCEXPairToGSwap(pair)
+
 	// Check cache first
 	p.priceCacheMu.RLock()
 	if cached, ok := p.priceCache[pair]; ok {
@@ -209,14 +254,11 @@ func (p *GSwapProvider) GetQuote(ctx context.Context, pair string) (*types.Price
 		return nil, fmt.Errorf("unknown quote token: %s", quoteSymbol)
 	}
 
-	// Fetch pool data from GalaChain
-	poolData, err := p.fetchCompositePool(ctx, baseToken.GalaChainMint, quoteToken.GalaChainMint, FeeTier100)
+	// Use quoting API to get amountOut for 1 unit of base
+	price, err := p.fetchQuotePrice(ctx, baseToken, quoteToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch pool data: %w", err)
+		return nil, fmt.Errorf("failed to fetch quote: %w", err)
 	}
-
-	// Calculate price from sqrtPrice
-	price := p.calculatePriceFromSqrtPrice(poolData.Pool.SqrtPrice, baseToken.Decimals, quoteToken.Decimals)
 
 	quote := &types.PriceQuote{
 		Exchange:  p.Name(),
@@ -225,15 +267,7 @@ func (p *GSwapProvider) GetQuote(ctx context.Context, pair string) (*types.Price
 		BidPrice:  price, // DEX has single price
 		AskPrice:  price, // DEX has single price
 		Timestamp: time.Now(),
-		Source:    "composite_pool",
-	}
-
-	// Parse liquidity for size info
-	if poolData.Pool.Liquidity != "" {
-		liquidity := new(big.Float)
-		liquidity.SetString(poolData.Pool.Liquidity)
-		quote.BidSize = liquidity
-		quote.AskSize = liquidity
+		Source:    "quote_api",
 	}
 
 	// Cache the quote
@@ -245,6 +279,172 @@ func (p *GSwapProvider) GetQuote(ctx context.Context, pair string) (*types.Price
 	p.priceCacheMu.Unlock()
 
 	return quote, nil
+}
+
+// fetchQuotePrice calls QuoteExactAmount for 1 unit of base to derive a price in quote.
+func (p *GSwapProvider) fetchQuotePrice(ctx context.Context, baseToken, quoteToken TokenInfo) (*big.Float, error) {
+	// Build token keys and normalize ordering (API expects token0/token1 sorted)
+	tkBase := parseTokenMint(baseToken.GalaChainMint)
+	tkQuote := parseTokenMint(quoteToken.GalaChainMint)
+
+	token0 := tkBase
+	token1 := tkQuote
+	tokenInIsToken0 := true // we sell base
+	if compareTokenKeys(tkBase, tkQuote) > 0 {
+		// swap to maintain lex order
+		token0 = tkQuote
+		token1 = tkBase
+		tokenInIsToken0 = false
+	}
+
+	req := QuoteExactAmountRequest{
+		Token0:     token0,
+		Token1:     token1,
+		ZeroForOne: tokenInIsToken0, // sell tokenIn
+		Fee:        FeeTier100,
+		Amount:     "1", // small amount - we rely on sqrt price for spot
+	}
+
+	// Try fee tiers and pick best out
+	fees := []int{FeeTier005, FeeTier030, FeeTier100}
+	var best *big.Float
+	for _, f := range fees {
+		req.Fee = f
+		quoteRes, err := p.callQuoteExactAmount(ctx, req)
+		if err != nil {
+			continue
+		}
+		price := derivePriceFromQuote(quoteRes, tokenInIsToken0)
+		if price == nil || price.Sign() <= 0 {
+			continue
+		}
+		if best == nil || price.Cmp(best) > 0 {
+			best = price
+		}
+	}
+
+	if best == nil {
+		return nil, fmt.Errorf("quote API returned no price")
+	}
+
+	return best, nil
+}
+
+// callQuoteExactAmount makes the HTTP request and returns parsed quote data.
+func (p *GSwapProvider) callQuoteExactAmount(ctx context.Context, reqBody QuoteExactAmountRequest) (*quoteResult, error) {
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal quote request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", quotingAPI, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create quote request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("quote API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read quote response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("quote API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var qr QuoteResponse
+	if err := json.Unmarshal(bodyBytes, &qr); err != nil {
+		return nil, fmt.Errorf("failed to decode quote response: %w", err)
+	}
+
+	if qr.Data == nil {
+		return nil, fmt.Errorf("quote response missing data")
+	}
+
+	result := &quoteResult{}
+
+	if amt0 := strings.TrimPrefix(qr.Data.Amount0, "-"); amt0 != "" {
+		if val, ok := new(big.Float).SetString(amt0); ok {
+			result.amount0 = val
+		}
+	}
+	if amt1 := strings.TrimPrefix(qr.Data.Amount1, "-"); amt1 != "" {
+		if val, ok := new(big.Float).SetString(amt1); ok {
+			result.amount1 = val
+		}
+	}
+	if qr.Data.CurrentSqrtPrice != "" {
+		if val, ok := new(big.Float).SetString(qr.Data.CurrentSqrtPrice); ok {
+			result.sqrtPrice = val
+		}
+	}
+
+	if result.amount0 == nil && result.amount1 == nil && result.sqrtPrice == nil {
+		return nil, fmt.Errorf("quote response missing amounts")
+	}
+
+	return result, nil
+}
+
+// derivePriceFromQuote converts raw quote data into a price for the base token (pair first element).
+func derivePriceFromQuote(q *quoteResult, baseIsToken0 bool) *big.Float {
+	if q == nil {
+		return nil
+	}
+
+	// Prefer spot price from sqrt price if present.
+	if q.sqrtPrice != nil && q.sqrtPrice.Sign() > 0 {
+		price := new(big.Float).Mul(q.sqrtPrice, q.sqrtPrice)
+		if !baseIsToken0 {
+			price = new(big.Float).Quo(big.NewFloat(1), price)
+		}
+		return price
+	}
+
+	// Fallback to ratio of in/out amounts.
+	if q.amount0 != nil && q.amount1 != nil && q.amount0.Sign() > 0 && q.amount1.Sign() > 0 {
+		if baseIsToken0 {
+			return new(big.Float).Quo(q.amount1, q.amount0)
+		}
+		return new(big.Float).Quo(q.amount0, q.amount1)
+	}
+
+	return nil
+}
+
+// mapCEXPairToGSwap converts typical CEX pair names into the wrapped-token pairs
+// expected by GSwap. If no mapping exists, the original pair is returned.
+func mapCEXPairToGSwap(pair string) string {
+	pair = strings.ToUpper(pair)
+
+	mappings := map[string]string{
+		// Keep base = GALA, quote = stable
+		"GALA/USDT":  "GALA/GUSDT",
+		"GALA/USDC":  "GALA/GUSDC",
+		"USDUC/GALA": "GUSDUC/GALA",
+		"ETH/GALA":   "GWETH/GALA",
+		"BTC/GALA":   "GWBTC/GALA",
+		"SOL/GALA":   "GSOL/GALA",
+
+		// Wrapped ETH vs USDC
+		"ETH/USDC":  "GWETH/GUSDC",
+		"WETH/USDC": "GWETH/GUSDC",
+
+		// MEW on GalaChain
+		"MEW/GALA": "GMEW/GALA",
+	}
+
+	if mapped, ok := mappings[pair]; ok {
+		return mapped
+	}
+
+	return pair
 }
 
 // GetOrderBook fetches the order book (simplified for DEX - uses pool liquidity).
@@ -292,9 +492,9 @@ func (p *GSwapProvider) fetchCompositePool(ctx context.Context, token0Mint, toke
 	}
 
 	reqBody := CompositePoolRequest{
-		Token0ClassKey: token0Key,
-		Token1ClassKey: token1Key,
-		Fee:            fee,
+		Token0: token0Key,
+		Token1: token1Key,
+		Fee:    fee,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -335,7 +535,9 @@ func (p *GSwapProvider) fetchCompositePool(ctx context.Context, token0Mint, toke
 // sqrtPriceX96 = sqrt(price) * 2^96
 func (p *GSwapProvider) calculatePriceFromSqrtPrice(sqrtPriceStr string, baseDecimals, quoteDecimals int) *big.Float {
 	sqrtPrice := new(big.Float)
-	sqrtPrice.SetString(sqrtPriceStr)
+	if _, ok := sqrtPrice.SetString(sqrtPriceStr); !ok {
+		return nil
+	}
 
 	// Price = (sqrtPrice / 2^96)^2
 	// First divide by 2^96

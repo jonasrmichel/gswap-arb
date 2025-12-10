@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/big"
 	"os"
 	"os/signal"
 	"strings"
@@ -309,9 +310,20 @@ func printStatus(agg *websocket.PriceAggregator, rep *reporter.Reporter) {
 
 	// Latest prices summary
 	prices := agg.GetLatestPrices()
+	galaUSDC := findReferencePrice(prices, "GALA/USDC")
 	if len(prices) > 0 {
 		fmt.Println("  Latest prices:")
 		for pair, exchanges := range prices {
+			var usdEquivalent *big.Float
+			if strings.HasSuffix(pair, "/GALA") && galaUSDC != nil {
+				for _, update := range exchanges {
+					if update.BidPrice != nil {
+						usdEquivalent = new(big.Float).Mul(update.BidPrice, galaUSDC)
+						break
+					}
+				}
+			}
+
 			fmt.Printf("    %s: ", pair)
 			priceParts := make([]string, 0, len(exchanges))
 			for ex, update := range exchanges {
@@ -319,12 +331,27 @@ func printStatus(agg *websocket.PriceAggregator, rep *reporter.Reporter) {
 				priceParts = append(priceParts, fmt.Sprintf("%s=%s (%.0fms ago)",
 					ex, formatBigFloat(update.BidPrice), float64(age.Milliseconds())))
 			}
-			fmt.Println(strings.Join(priceParts, ", "))
+			line := strings.Join(priceParts, ", ")
+			if usdEquivalent != nil {
+				line = fmt.Sprintf("%s [~$%s]", line, usdEquivalent.Text('f', 6))
+			}
+			fmt.Println(line)
 		}
 	}
 
 	fmt.Println(strings.Repeat("-", 60))
 	fmt.Println()
+}
+
+func findReferencePrice(prices map[string]map[string]*websocket.PriceUpdate, pair string) *big.Float {
+	if exUpdates, ok := prices[pair]; ok {
+		for _, update := range exUpdates {
+			if update.BidPrice != nil {
+				return update.BidPrice
+			}
+		}
+	}
+	return nil
 }
 
 func formatBigFloat(f interface{}) string {
