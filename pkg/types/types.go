@@ -46,16 +46,17 @@ type TradingPair struct {
 
 // PriceQuote represents a price quote from an exchange.
 type PriceQuote struct {
-	Exchange  string    `json:"exchange"`
-	Pair      string    `json:"pair"`      // e.g., "GALA/USDT"
-	Price     *big.Float `json:"price"`     // Best price
-	BidPrice  *big.Float `json:"bid_price"` // Best bid (buy price)
-	AskPrice  *big.Float `json:"ask_price"` // Best ask (sell price)
-	BidSize   *big.Float `json:"bid_size"`  // Size at best bid
-	AskSize   *big.Float `json:"ask_size"`  // Size at best ask
-	Volume24h *big.Float `json:"volume_24h,omitempty"`
-	Timestamp time.Time  `json:"timestamp"`
-	Source    string     `json:"source"` // "ticker", "orderbook", etc.
+	Exchange    string     `json:"exchange"`
+	Pair        string     `json:"pair"`      // e.g., "GALA/USDT"
+	Price       *big.Float `json:"price"`     // Best price
+	BidPrice    *big.Float `json:"bid_price"` // Best bid (buy price)
+	AskPrice    *big.Float `json:"ask_price"` // Best ask (sell price)
+	BidSize     *big.Float `json:"bid_size"`  // Size at best bid
+	AskSize     *big.Float `json:"ask_size"`  // Size at best ask
+	Volume24h   *big.Float `json:"volume_24h,omitempty"`
+	Timestamp   time.Time  `json:"timestamp"`
+	Source      string     `json:"source"`                     // "ticker", "orderbook", etc.
+	PriceImpact float64    `json:"price_impact_pct,omitempty"` // Price impact percentage (DEX)
 }
 
 // OrderBookEntry represents a single order book level.

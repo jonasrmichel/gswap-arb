@@ -28,6 +28,9 @@ type Config struct {
 	// Rebalancing settings
 	Rebalancing RebalancingSettings `json:"rebalancing"`
 
+	// Solana settings
+	Solana SolanaSettings `json:"solana"`
+
 	// Exchange settings
 	Exchanges []ExchangeSettings `json:"exchanges"`
 
@@ -160,6 +163,53 @@ func DefaultCrossChainArbitrageSettings() CrossChainArbitrageSettings {
 	}
 }
 
+// SolanaSettings holds Solana/Jupiter DEX configuration.
+type SolanaSettings struct {
+	// Enable/disable
+	Enabled bool `json:"enabled"` // Enable Solana/Jupiter price provider
+
+	// RPC settings
+	RPCURL string `json:"rpc_url"` // Solana RPC endpoint
+
+	// Wallet credentials
+	PrivateKey    string `json:"private_key,omitempty"`    // Base58 encoded private key
+	WalletAddress string `json:"wallet_address,omitempty"` // Base58 encoded public key
+
+	// Jupiter API settings
+	JupiterAPIBase string `json:"jupiter_api_base,omitempty"` // Jupiter API endpoint
+	JupiterAPIKey  string `json:"jupiter_api_key,omitempty"`  // Optional API key for Ultra API
+
+	// Trading settings
+	TradingEnabled    bool    `json:"trading_enabled"`     // Enable trading (not just price feeds)
+	MaxTradeSize      float64 `json:"max_trade_size"`      // Maximum trade size in USD
+	DefaultSlippageBps int    `json:"default_slippage_bps"` // Default slippage tolerance (default: 50 = 0.5%)
+
+	// Polling settings
+	PollIntervalSeconds int `json:"poll_interval_seconds"` // How often to poll for prices (default: 5)
+
+	// Supported pairs (if empty, use defaults)
+	Pairs []string `json:"pairs,omitempty"` // e.g., ["SOL/USDC", "GALA/SOL"]
+}
+
+// DefaultSolanaSettings returns sensible defaults for Solana configuration.
+func DefaultSolanaSettings() SolanaSettings {
+	return SolanaSettings{
+		Enabled:            false, // Disabled by default
+		RPCURL:             "https://api.mainnet-beta.solana.com",
+		JupiterAPIBase:     "https://lite-api.jup.ag/swap/v1",
+		TradingEnabled:     false,
+		MaxTradeSize:       100.0, // $100 default
+		DefaultSlippageBps: 50,    // 0.5%
+		PollIntervalSeconds: 5,
+		Pairs: []string{
+			"SOL/USDC",
+			"SOL/USDT",
+			"GALA/SOL",
+			"GALA/USDC",
+		},
+	}
+}
+
 // ExchangeSettings holds configuration for a single exchange.
 type ExchangeSettings struct {
 	ID      string `json:"id"`
@@ -217,6 +267,8 @@ func DefaultConfig() *Config {
 		Rebalancing: DefaultRebalancingSettings(),
 
 		CrossChainArbitrage: DefaultCrossChainArbitrageSettings(),
+
+		Solana: DefaultSolanaSettings(),
 
 		Exchanges: []ExchangeSettings{
 			{ID: "gswap", Name: "GSwap", Type: "dex", Enabled: true},
@@ -377,6 +429,44 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("REBALANCING_MAX_AMOUNT_USD"); v != "" {
 		if val, err := parseFloat(v); err == nil {
 			c.Rebalancing.MaxRebalanceAmountUSD = val
+		}
+	}
+
+	// Solana settings
+	if v := os.Getenv("SOLANA_ENABLED"); v != "" {
+		c.Solana.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("SOLANA_RPC_URL"); v != "" {
+		c.Solana.RPCURL = v
+	}
+	if v := os.Getenv("SOLANA_PRIVATE_KEY"); v != "" {
+		c.Solana.PrivateKey = v
+	}
+	if v := os.Getenv("SOLANA_WALLET_ADDRESS"); v != "" {
+		c.Solana.WalletAddress = v
+	}
+	if v := os.Getenv("JUPITER_API_BASE"); v != "" {
+		c.Solana.JupiterAPIBase = v
+	}
+	if v := os.Getenv("JUPITER_API_KEY"); v != "" {
+		c.Solana.JupiterAPIKey = v
+	}
+	if v := os.Getenv("SOLANA_TRADING_ENABLED"); v != "" {
+		c.Solana.TradingEnabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("SOLANA_MAX_TRADE_SIZE"); v != "" {
+		if val, err := parseFloat(v); err == nil {
+			c.Solana.MaxTradeSize = val
+		}
+	}
+	if v := os.Getenv("SOLANA_DEFAULT_SLIPPAGE_BPS"); v != "" {
+		if val, err := parseInt(v); err == nil {
+			c.Solana.DefaultSlippageBps = val
+		}
+	}
+	if v := os.Getenv("SOLANA_POLL_INTERVAL_SECONDS"); v != "" {
+		if val, err := parseInt(v); err == nil {
+			c.Solana.PollIntervalSeconds = val
 		}
 	}
 

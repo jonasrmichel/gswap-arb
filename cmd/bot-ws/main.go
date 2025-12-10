@@ -272,6 +272,37 @@ func setupWebSocketProviders(agg *websocket.PriceAggregator, cfg *config.Config)
 			fmt.Printf("Added Bybit WebSocket provider\n")
 		}
 	}
+
+	// Add Solana/Jupiter provider if enabled
+	if cfg.Solana.Enabled {
+		pollInterval := time.Duration(cfg.Solana.PollIntervalSeconds) * time.Second
+		if pollInterval == 0 {
+			pollInterval = 5 * time.Second
+		}
+
+		jupiterConfig := &websocket.JupiterPollerConfig{
+			PollInterval: pollInterval,
+			BaseURL:      cfg.Solana.JupiterAPIBase,
+			APIKey:       cfg.Solana.JupiterAPIKey,
+		}
+
+		provider := websocket.NewJupiterPollerProvider(jupiterConfig)
+
+		// Add custom tokens if configured
+		for _, token := range cfg.Tokens {
+			if token.Symbol == "SOL" || token.Symbol == "USDC" || token.Symbol == "USDT" {
+				continue // Default tokens
+			}
+			// For now, only add Solana tokens that have mint addresses
+			// This would need to be extended with a SolanaMint field in TokenSettings
+		}
+
+		agg.AddProvider(provider)
+		fmt.Printf("Added Jupiter polling provider (%v interval)\n", pollInterval)
+
+		// Log supported pairs
+		fmt.Printf("Jupiter supported pairs: %v\n", websocket.GetJupiterSupportedPairs())
+	}
 }
 
 // getPairs extracts unique pairs from configuration.

@@ -10,8 +10,9 @@
 
 ## Features
 
-- **Multi-exchange support**: Monitors GSwap (GalaChain DEX) and major CEXs including:
+- **Multi-exchange support**: Monitors GSwap (GalaChain DEX), Solana DEXs, and major CEXs including:
   - **GSwap** (GalaChain DEX) - REST polling with 5s intervals
+  - **Jupiter** (Solana DEX aggregator) - REST polling with configurable intervals
   - Binance (with Binance.US fallback)
   - Coinbase
   - Kraken
@@ -19,7 +20,7 @@
   - Bybit
 
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
-- **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges) and GSwap DEX
+- **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges), GSwap DEX, and Jupiter (Solana)
 - **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
 - **Cross-chain arbitrage**: Detects opportunities spanning GalaChain/Ethereum bridge with volatility-aware risk adjustment
 - **Inventory management**: Real-time balance monitoring across exchanges with drift detection
@@ -61,18 +62,25 @@ gswap-arb/
 │   │   ├── types.go          # TradeExecutor interface & types
 │   │   ├── ccxt_executor.go  # Unified CEX executor via CCXT
 │   │   ├── gswap.go          # GSwap DEX executor
+│   │   ├── solana.go         # Solana/Jupiter DEX executor
 │   │   ├── registry.go       # Executor registry
 │   │   └── coordinator.go    # Arbitrage execution coordinator
+│   ├── jupiter/
+│   │   ├── client.go         # Jupiter API client
+│   │   └── types.go          # Jupiter API types & token definitions
 │   ├── providers/
 │   │   ├── provider.go       # Provider interface & registry
 │   │   ├── gswap/
 │   │   │   └── gswap.go      # GalaChain/GSwap provider
+│   │   ├── solana/
+│   │   │   └── jupiter.go    # Solana/Jupiter price provider
 │   │   ├── cex/
 │   │   │   └── cex.go        # CEX REST API providers
 │   │   └── websocket/
 │   │       ├── types.go      # WebSocket types & base provider
 │   │       ├── aggregator.go # Multi-exchange price aggregator
-│   │       ├── gswap_poller.go # GSwap REST polling provider
+│   │       ├── gswap_poller.go    # GSwap REST polling provider
+│   │       ├── jupiter_poller.go  # Jupiter REST polling provider
 │   │       ├── binance.go    # Binance WebSocket
 │   │       ├── coinbase.go   # Coinbase WebSocket
 │   │       ├── kraken.go     # Kraken WebSocket
@@ -505,6 +513,86 @@ Cross-chain opportunities trigger Slack notifications with:
 - Risk-adjusted profit
 - Recommendation status (profitable or not after risk adjustment)
 
+### Solana/Jupiter DEX Integration
+
+The bot supports arbitrage detection and trade execution on Solana via the Jupiter aggregator. Jupiter routes trades through multiple Solana DEXs (Raydium, Orca, Phoenix, etc.) to find the best prices.
+
+#### Enabling Solana Support
+
+```bash
+# Enable Solana price feeds
+export SOLANA_ENABLED=true
+
+# Solana RPC endpoint (public or private)
+export SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+
+# For trading (optional)
+export SOLANA_PRIVATE_KEY=<base58_encoded_private_key>
+export SOLANA_WALLET_ADDRESS=<base58_encoded_public_key>
+export SOLANA_TRADING_ENABLED=true
+export SOLANA_MAX_TRADE_SIZE=100
+export SOLANA_DEFAULT_SLIPPAGE_BPS=50
+```
+
+#### Jupiter API Configuration
+
+```bash
+# Jupiter Lite API (free, rate limited)
+export JUPITER_API_BASE=https://lite-api.jup.ag/swap/v1
+
+# Jupiter Ultra API (requires API key for higher limits)
+export JUPITER_API_BASE=https://api.jup.ag/swap/v1
+export JUPITER_API_KEY=your_api_key
+
+# Polling interval (seconds)
+export SOLANA_POLL_INTERVAL_SECONDS=5
+```
+
+#### Supported Solana Pairs
+
+The following pairs are supported by default:
+
+| Pair | Description |
+|------|-------------|
+| SOL/USDC | Native SOL to USDC |
+| SOL/USDT | Native SOL to USDT |
+| GALA/SOL | GALA (wormhole) to SOL |
+| GALA/USDC | GALA (wormhole) to USDC |
+| BONK/SOL | BONK memecoin to SOL |
+| WIF/SOL | WIF memecoin to SOL |
+| POPCAT/SOL | POPCAT memecoin to SOL |
+| FARTCOIN/SOL | FARTCOIN memecoin to SOL |
+
+#### Token Addresses (Mainnet)
+
+| Token | Mint Address | Decimals |
+|-------|--------------|----------|
+| SOL | `So11111111111111111111111111111111111111112` | 9 |
+| USDC | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | 6 |
+| USDT | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | 6 |
+| GALA | `GALAxveLUPZLARuXA5WyJQ5ThEyc5T49xF1dN3BJGALA` | 8 |
+| BONK | `DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263` | 5 |
+| WIF | `EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm` | 6 |
+| POPCAT | `7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr` | 9 |
+| FARTCOIN | `9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump` | 6 |
+
+#### How Jupiter Integration Works
+
+1. **Price Discovery**: The bot polls Jupiter's quote API to get real-time swap prices
+2. **Route Optimization**: Jupiter automatically finds the best route across multiple DEXs
+3. **Arbitrage Detection**: Prices are compared with CEXs and other DEXs for opportunities
+4. **Trade Execution** (if enabled): Uses Jupiter's swap API to build and submit transactions
+
+#### Trade Execution Flow (Solana)
+
+1. Get fresh quote from Jupiter with slippage protection
+2. Build swap transaction via Jupiter API
+3. Sign transaction with wallet keypair
+4. Submit via Solana RPC
+5. Confirm transaction status
+
+**Note**: Full transaction signing requires ed25519 keypair handling. The current implementation uses Jupiter's API for transaction building.
+
 ### Slack Notifications
 
 The bot sends real-time Slack notifications for various events. Enable by setting `SLACK_ENABLED=true` and providing `SLACK_API_TOKEN` and `SLACK_CHANNEL`.
@@ -828,6 +916,7 @@ The WebSocket implementation provides real-time price feeds with automatic recon
 | Exchange | Connection Type | Endpoint | Features |
 |----------|----------------|----------|----------|
 | **GSwap** | REST Polling (5s) | GalaChain API | Composite pool prices, DEX liquidity |
+| **Jupiter** | REST Polling (configurable) | Jupiter API | Solana DEX aggregator, best route prices |
 | Binance | WebSocket | `wss://stream.binance.com:9443/ws` | Book ticker (best bid/ask), US fallback |
 | Coinbase | WebSocket | `wss://ws-feed.exchange.coinbase.com` | Full ticker with 24h stats |
 | Kraken | WebSocket | `wss://ws.kraken.com` | Ticker with volume |
@@ -921,6 +1010,7 @@ GSWAP_MAX_TRADE_SIZE=100
 | Exchange | Type | Features |
 |----------|------|----------|
 | **GSwap** | DEX | Swap execution via GalaChain API, balance checking |
+| **Jupiter** | DEX | Swap execution via Jupiter API (Solana), balance checking |
 | **Binance** | CEX | Via CCXT - Market/limit orders, balance checking |
 | **Kraken** | CEX | Via CCXT - Market/limit orders, balance checking |
 | **Coinbase** | CEX | Via CCXT - Market/limit orders, balance checking |
@@ -970,12 +1060,14 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Automated rebalancing based on drift thresholds
 - [x] Circuit breaker for rebalancing failures
 - [x] Cross-chain arbitrage detection with volatility-aware risk adjustment
+- [x] Solana DEX support via Jupiter aggregator
 - [ ] Cross-chain arbitrage execution (Phase 5)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
 - [ ] Gas/transaction cost estimation for DEX trades
 - [ ] GSwap WebSocket support (when available from GalaChain)
 - [ ] Additional GalaChain token pairs
+- [ ] Solana-GalaChain bridge arbitrage (when bridge available)
 
 ## License
 

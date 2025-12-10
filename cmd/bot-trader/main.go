@@ -687,6 +687,34 @@ func setupExecutors(ctx context.Context, registry *executor.ExecutorRegistry, cf
 		}
 	}
 
+	// Add Solana/Jupiter executor if enabled for trading
+	if cfg.Solana.Enabled && cfg.Solana.TradingEnabled {
+		if cfg.Solana.PrivateKey == "" || cfg.Solana.WalletAddress == "" {
+			fmt.Printf("Skipping Jupiter executor: Solana credentials not configured\n")
+		} else {
+			solanaConfig := &executor.SolanaExecutorConfig{
+				RPCURL:         cfg.Solana.RPCURL,
+				PrivateKey:     cfg.Solana.PrivateKey,
+				WalletAddress:  cfg.Solana.WalletAddress,
+				JupiterBaseURL: cfg.Solana.JupiterAPIBase,
+				JupiterAPIKey:  cfg.Solana.JupiterAPIKey,
+				SlippageBps:    cfg.Solana.DefaultSlippageBps,
+			}
+
+			solanaExec, err := executor.NewSolanaExecutor(solanaConfig)
+			if err != nil {
+				fmt.Printf("Warning: Failed to create Jupiter executor: %v\n", err)
+				lastErr = err
+			} else if err := solanaExec.Initialize(ctx); err != nil {
+				fmt.Printf("Warning: Failed to initialize Jupiter executor: %v\n", err)
+				lastErr = err
+			} else {
+				registry.Register(solanaExec)
+				fmt.Printf("Initialized Jupiter executor (wallet: %s)\n", solanaExec.GetWalletAddress())
+			}
+		}
+	}
+
 	return lastErr
 }
 
@@ -725,6 +753,23 @@ func setupWebSocketProviders(agg *websocket.PriceAggregator, cfg *config.Config)
 		case "bybit":
 			agg.AddProvider(websocket.NewBybitWSProvider())
 		}
+	}
+
+	// Add Solana/Jupiter provider if enabled
+	if cfg.Solana.Enabled {
+		pollInterval := time.Duration(cfg.Solana.PollIntervalSeconds) * time.Second
+		if pollInterval == 0 {
+			pollInterval = 5 * time.Second
+		}
+
+		jupiterConfig := &websocket.JupiterPollerConfig{
+			PollInterval: pollInterval,
+			BaseURL:      cfg.Solana.JupiterAPIBase,
+			APIKey:       cfg.Solana.JupiterAPIKey,
+		}
+
+		agg.AddProvider(websocket.NewJupiterPollerProvider(jupiterConfig))
+		fmt.Printf("Added Jupiter polling provider (%v interval)\n", pollInterval)
 	}
 }
 
