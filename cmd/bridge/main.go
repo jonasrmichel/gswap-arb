@@ -86,12 +86,13 @@ Examples:
   bridge --status <transaction-id>
 
 Environment Variables:
-  GSWAP_PRIVATE_KEY         GalaChain/Ethereum wallet private key
-  ETH_RPC_URL               Ethereum RPC endpoint
-  SOLANA_PRIVATE_KEY        Solana wallet private key (Base58)
-  SOLANA_WALLET_ADDRESS     Solana wallet address (Base58)
-  SOLANA_RPC_URL            Solana RPC endpoint
-  SOLANA_BRIDGE_PROGRAM_ID  Gala bridge program ID on Solana
+  GSWAP_PRIVATE_KEY              GalaChain/Ethereum wallet private key
+  GALACHAIN_BRIDGE_WALLET_ADDRESS  Bridge wallet address (non-checksummed, overrides derived address)
+  ETH_RPC_URL                    Ethereum RPC endpoint
+  SOLANA_PRIVATE_KEY             Solana wallet private key (Base58)
+  SOLANA_WALLET_ADDRESS          Solana wallet address (Base58)
+  SOLANA_RPC_URL                 Solana RPC endpoint
+  SOLANA_BRIDGE_PROGRAM_ID       Gala bridge program ID on Solana
 
 `)
 	}
@@ -155,10 +156,14 @@ Environment Variables:
 		cancel()
 	}()
 
+	// Get bridge wallet address (may differ from GSwap executor due to checksum requirements)
+	bridgeWalletAddr := os.Getenv("GALACHAIN_BRIDGE_WALLET_ADDRESS")
+
 	// Create bridge executor
 	executor, err := bridge.NewBridgeExecutor(&bridge.BridgeConfig{
 		GalaChainPrivateKey:   pk,
-		EthereumPrivateKey:    pk, // Use same key for both chains
+		GalaChainAddress:      bridgeWalletAddr, // Use specific address if provided
+		EthereumPrivateKey:    pk,               // Use same key for both chains
 		EthereumRPCURL:        ethRPCURL,
 		SolanaPrivateKey:      solPrivKey,
 		SolanaWalletAddress:   solWalletAddr,

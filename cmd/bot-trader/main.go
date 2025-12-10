@@ -209,11 +209,25 @@ func main() {
 				ethRPCURL = os.Getenv("ETH_RPC_URL")
 			}
 
-			// Create bridge executor
+			// Get Solana bridge config if enabled
+			solanaBridgeProgramID := os.Getenv("SOLANA_BRIDGE_PROGRAM_ID")
+			if solanaBridgeProgramID == "" {
+				solanaBridgeProgramID = bridge.DefaultSolanaBridgeProgramID
+			}
+
+			// Get bridge wallet address (may differ from GSwap executor due to checksum requirements)
+			bridgeWalletAddr := os.Getenv("GALACHAIN_BRIDGE_WALLET_ADDRESS")
+
+			// Create bridge executor with Solana support
 			bridgeExec, err := bridge.NewBridgeExecutor(&bridge.BridgeConfig{
-				GalaChainPrivateKey: privateKey,
-				EthereumPrivateKey:  privateKey, // Same key for both chains
-				EthereumRPCURL:      ethRPCURL,
+				GalaChainPrivateKey:   privateKey,
+				GalaChainAddress:      bridgeWalletAddr, // Use specific address if provided
+				EthereumPrivateKey:    privateKey,       // Same key for both chains
+				EthereumRPCURL:        ethRPCURL,
+				SolanaPrivateKey:      cfg.Solana.PrivateKey,
+				SolanaWalletAddress:   cfg.Solana.WalletAddress,
+				SolanaRPCURL:          cfg.Solana.RPCURL,
+				SolanaBridgeProgramID: solanaBridgeProgramID,
 			})
 			if err != nil {
 				fmt.Printf("Warning: Failed to create bridge executor: %v\n", err)
@@ -316,6 +330,9 @@ func main() {
 					} else {
 						fmt.Println("  GalaChain -> Ethereum bridging only (set ETH_RPC_URL for bidirectional)")
 					}
+					if cfg.Solana.Enabled && cfg.Solana.PrivateKey != "" {
+						fmt.Println("  Solana bridging available (GalaChain <-> Solana)")
+					}
 				}
 			}
 		}
@@ -325,12 +342,14 @@ func main() {
 	var crossChainDetector *arbitrage.CrossChainArbitrageDetector
 	if *crossChainArb || cfg.CrossChainArbitrage.Enabled {
 		volatilityConfig := &arbitrage.VolatilityConfig{
-			WindowMinutes:        cfg.CrossChainArbitrage.VolatilityWindowMinutes,
-			MinSamples:           10,
-			DefaultVolatilityBps: cfg.CrossChainArbitrage.DefaultVolatilityBps,
-			ConfidenceMultiplier: cfg.CrossChainArbitrage.ConfidenceMultiplier,
-			BridgeTimeToEthMin:   cfg.CrossChainArbitrage.BridgeTimeToEthMin,
-			BridgeTimeToGalaMin:  cfg.CrossChainArbitrage.BridgeTimeToGalaMin,
+			WindowMinutes:          cfg.CrossChainArbitrage.VolatilityWindowMinutes,
+			MinSamples:             10,
+			DefaultVolatilityBps:   cfg.CrossChainArbitrage.DefaultVolatilityBps,
+			ConfidenceMultiplier:   cfg.CrossChainArbitrage.ConfidenceMultiplier,
+			BridgeTimeToEthMin:     cfg.CrossChainArbitrage.BridgeTimeToEthMin,
+			BridgeTimeToGalaMin:    cfg.CrossChainArbitrage.BridgeTimeToGalaMin,
+			BridgeTimeToSolanaMin:  cfg.CrossChainArbitrage.BridgeTimeToSolanaMin,
+			BridgeTimeFromSolanaMin: cfg.CrossChainArbitrage.BridgeTimeFromSolanaMin,
 		}
 
 		ccConfig := &arbitrage.CrossChainConfig{
@@ -339,12 +358,22 @@ func main() {
 			MaxBridgeTimeMinutes:     cfg.CrossChainArbitrage.MaxBridgeTimeMinutes,
 			BridgeTimeToEthMin:       cfg.CrossChainArbitrage.BridgeTimeToEthMin,
 			BridgeTimeToGalaMin:      cfg.CrossChainArbitrage.BridgeTimeToGalaMin,
+			BridgeTimeToSolanaMin:    cfg.CrossChainArbitrage.BridgeTimeToSolanaMin,
+			BridgeTimeFromSolanaMin:  cfg.CrossChainArbitrage.BridgeTimeFromSolanaMin,
 			ExecutionStrategy:        cfg.CrossChainArbitrage.ExecutionStrategy,
 			AllowedTokens:            cfg.CrossChainArbitrage.AllowedTokens,
 		}
 
 		crossChainDetector = arbitrage.NewCrossChainArbitrageDetector(ccConfig, arbitrage.NewVolatilityModel(volatilityConfig))
 		fmt.Printf("Cross-chain arbitrage detection enabled (min spread: %.1f%%)\n", *crossChainMinSpread)
+		if cfg.CrossChainArbitrage.BridgeEnabled {
+			fmt.Println("  Bridge execution: ENABLED")
+		} else {
+			fmt.Println("  Bridge execution: DISABLED (detection only)")
+		}
+		if cfg.Solana.Enabled {
+			fmt.Println("  Solana cross-chain arbitrage enabled (GalaChain <-> Solana)")
+		}
 	}
 
 	// Set up arbitrage callback with execution
@@ -478,6 +507,7 @@ func main() {
 						TradeSize:         tradeSize.Text('f', 2),
 						ExpectedProfit:    ccOpp.NetProfit.Text('f', 4),
 						IsRecommended:     ccOpp.IsValid,
+						BridgeEnabled:     cfg.CrossChainArbitrage.BridgeEnabled,
 					})
 				}
 			}

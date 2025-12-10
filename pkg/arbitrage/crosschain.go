@@ -22,9 +22,11 @@ type CrossChainConfig struct {
 	MinRiskAdjustedProfitBps int     `json:"min_risk_adjusted_profit_bps"`
 
 	// Bridge settings
-	MaxBridgeTimeMinutes int `json:"max_bridge_time_minutes"`
-	BridgeTimeToEthMin   int `json:"bridge_time_to_eth_min"`
-	BridgeTimeToGalaMin  int `json:"bridge_time_to_gala_min"`
+	MaxBridgeTimeMinutes    int `json:"max_bridge_time_minutes"`
+	BridgeTimeToEthMin      int `json:"bridge_time_to_eth_min"`
+	BridgeTimeToGalaMin     int `json:"bridge_time_to_gala_min"`
+	BridgeTimeToSolanaMin   int `json:"bridge_time_to_solana_min"`
+	BridgeTimeFromSolanaMin int `json:"bridge_time_from_solana_min"`
 
 	// Execution
 	ExecutionStrategy string   `json:"execution_strategy"`
@@ -39,8 +41,10 @@ func DefaultCrossChainConfig() *CrossChainConfig {
 		MaxBridgeTimeMinutes:     30,
 		BridgeTimeToEthMin:       15,
 		BridgeTimeToGalaMin:      15,
+		BridgeTimeToSolanaMin:    10, // Solana bridges are faster
+		BridgeTimeFromSolanaMin:  10,
 		ExecutionStrategy:        "staged",
-		AllowedTokens:            []string{"GALA", "GUSDT", "GUSDC"},
+		AllowedTokens:            []string{"GALA", "GUSDT", "GUSDC", "GSOL", "GMEW", "GTRUMP"},
 	}
 }
 
@@ -66,8 +70,8 @@ func (d *CrossChainArbitrageDetector) GetVolatilityModel() *VolatilityModel {
 }
 
 // DetectCrossChainOpportunities finds profitable cross-chain arbitrage opportunities.
-// This looks for price differences between GSwap (GalaChain) and CEXs (Ethereum side)
-// that are large enough to cover bridge costs and volatility risk.
+// This looks for price differences between GSwap (GalaChain), CEXs (Ethereum side),
+// and Solana DEXs that are large enough to cover bridge costs and volatility risk.
 func (d *CrossChainArbitrageDetector) DetectCrossChainOpportunities(
 	pair string,
 	prices map[string]*ExchangePrice,
@@ -78,42 +82,68 @@ func (d *CrossChainArbitrageDetector) DetectCrossChainOpportunities(
 	}
 
 	// Separate exchanges by chain category
-	var galaChainExchanges, ethereumExchanges []string
+	var galaChainExchanges, ethereumExchanges, solanaExchanges []string
 	for exchange := range prices {
-		if GetExchangeCategory(exchange) == ExchangeCategoryGalaChain {
+		switch GetExchangeCategory(exchange) {
+		case ExchangeCategoryGalaChain:
 			galaChainExchanges = append(galaChainExchanges, exchange)
-		} else {
+		case ExchangeCategorySolana:
+			solanaExchanges = append(solanaExchanges, exchange)
+		default:
 			ethereumExchanges = append(ethereumExchanges, exchange)
 		}
 	}
 
-	// Need at least one exchange on each side
-	if len(galaChainExchanges) == 0 || len(ethereumExchanges) == 0 {
-		return nil
-	}
-
 	var opportunities []*types.ChainArbitrageOpportunity
 
-	// Check all cross-chain pairs (GalaChain <-> Ethereum)
-	for _, galaEx := range galaChainExchanges {
-		for _, ethEx := range ethereumExchanges {
-			galaPrice := prices[galaEx]
-			ethPrice := prices[ethEx]
+	// Check GalaChain <-> Ethereum pairs
+	if len(galaChainExchanges) > 0 && len(ethereumExchanges) > 0 {
+		for _, galaEx := range galaChainExchanges {
+			for _, ethEx := range ethereumExchanges {
+				galaPrice := prices[galaEx]
+				ethPrice := prices[ethEx]
 
-			if galaPrice == nil || ethPrice == nil {
-				continue
+				if galaPrice == nil || ethPrice == nil {
+					continue
+				}
+
+				// Direction 1: Buy on GalaChain, bridge to Ethereum, sell on CEX
+				opp1 := d.evaluateCrossChainPath(pair, galaEx, ethEx, galaPrice, ethPrice, tradeSize, "to_ethereum")
+				if opp1 != nil && opp1.IsValid {
+					opportunities = append(opportunities, opp1)
+				}
+
+				// Direction 2: Buy on CEX, bridge to GalaChain, sell on GSwap
+				opp2 := d.evaluateCrossChainPath(pair, ethEx, galaEx, ethPrice, galaPrice, tradeSize, "to_galachain")
+				if opp2 != nil && opp2.IsValid {
+					opportunities = append(opportunities, opp2)
+				}
 			}
+		}
+	}
 
-			// Direction 1: Buy on GalaChain, bridge to Ethereum, sell on CEX
-			opp1 := d.evaluateCrossChainPath(pair, galaEx, ethEx, galaPrice, ethPrice, tradeSize, "to_ethereum")
-			if opp1 != nil && opp1.IsValid {
-				opportunities = append(opportunities, opp1)
-			}
+	// Check GalaChain <-> Solana pairs
+	if len(galaChainExchanges) > 0 && len(solanaExchanges) > 0 {
+		for _, galaEx := range galaChainExchanges {
+			for _, solEx := range solanaExchanges {
+				galaPrice := prices[galaEx]
+				solPrice := prices[solEx]
 
-			// Direction 2: Buy on CEX, bridge to GalaChain, sell on GSwap
-			opp2 := d.evaluateCrossChainPath(pair, ethEx, galaEx, ethPrice, galaPrice, tradeSize, "to_galachain")
-			if opp2 != nil && opp2.IsValid {
-				opportunities = append(opportunities, opp2)
+				if galaPrice == nil || solPrice == nil {
+					continue
+				}
+
+				// Direction 1: Buy on GalaChain, bridge to Solana, sell on Jupiter
+				opp1 := d.evaluateCrossChainPath(pair, galaEx, solEx, galaPrice, solPrice, tradeSize, "to_solana")
+				if opp1 != nil && opp1.IsValid {
+					opportunities = append(opportunities, opp1)
+				}
+
+				// Direction 2: Buy on Jupiter, bridge to GalaChain, sell on GSwap
+				opp2 := d.evaluateCrossChainPath(pair, solEx, galaEx, solPrice, galaPrice, tradeSize, "from_solana")
+				if opp2 != nil && opp2.IsValid {
+					opportunities = append(opportunities, opp2)
+				}
 			}
 		}
 	}
@@ -182,8 +212,17 @@ func (d *CrossChainArbitrageDetector) evaluateCrossChainPath(
 	})
 
 	// Step 2: Bridge
-	bridgeTimeMin := d.config.BridgeTimeToEthMin
-	if bridgeDirection == "to_galachain" {
+	var bridgeTimeMin int
+	switch bridgeDirection {
+	case "to_ethereum":
+		bridgeTimeMin = d.config.BridgeTimeToEthMin
+	case "to_galachain":
+		bridgeTimeMin = d.config.BridgeTimeToGalaMin
+	case "to_solana":
+		bridgeTimeMin = d.config.BridgeTimeToSolanaMin
+	case "from_solana":
+		bridgeTimeMin = d.config.BridgeTimeFromSolanaMin
+	default:
 		bridgeTimeMin = d.config.BridgeTimeToGalaMin
 	}
 
@@ -332,6 +371,12 @@ func mapTokenToBridgeToken(token string) string {
 		return "GUSDC"
 	case "BTC", "WBTC":
 		return "GWBTC"
+	case "SOL", "GSOL":
+		return "GSOL"
+	case "MEW", "GMEW":
+		return "GMEW"
+	case "TRUMP", "GTRUMP":
+		return "GTRUMP"
 	default:
 		return token
 	}

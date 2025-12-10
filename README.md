@@ -218,8 +218,12 @@ go build -o gswap-bridge ./cmd/bridge
 
 | Direction | Description | Requirements |
 |-----------|-------------|--------------|
-| `to-eth` | GalaChain → Ethereum | `GSWAP_PRIVATE_KEY` |
-| `to-gala` | Ethereum → GalaChain | `GSWAP_PRIVATE_KEY`, `ETH_RPC_URL` |
+| `to-eth` | GalaChain → Ethereum | `GSWAP_PRIVATE_KEY`, `GALACHAIN_BRIDGE_WALLET_ADDRESS` |
+| `to-gala` | Ethereum → GalaChain | `GSWAP_PRIVATE_KEY`, `GALACHAIN_BRIDGE_WALLET_ADDRESS`, `ETH_RPC_URL` |
+| `to-sol` | GalaChain → Solana | `GSWAP_PRIVATE_KEY`, `GALACHAIN_BRIDGE_WALLET_ADDRESS` |
+| `from-sol` | Solana → GalaChain | `SOLANA_PRIVATE_KEY`, `SOLANA_WALLET_ADDRESS`, `GALACHAIN_BRIDGE_WALLET_ADDRESS` |
+
+**Important**: The bridge requires `GALACHAIN_BRIDGE_WALLET_ADDRESS` with non-checksummed address format, which differs from the checksummed `GSWAP_WALLET_ADDRESS` used by the GSwap executor.
 
 **GalaChain → Ethereum (`to-eth`)**:
 - Uses the GalaConnect DEX API with EIP-712 signed requests
@@ -428,10 +432,15 @@ The trading bot can detect arbitrage opportunities that span the GalaChain/Ether
 #### How Cross-Chain Arbitrage Works
 
 Cross-chain arbitrage opportunities arise when:
-1. A token is trading at different prices on GSwap (GalaChain DEX) vs CEXs (Ethereum side)
+1. A token is trading at different prices across different chains (GalaChain, Ethereum, Solana)
 2. The price spread is large enough to cover bridge costs and volatility risk
 
-**Example flow**: Buy GALA on GSwap (cheaper) → Bridge to Ethereum → Sell on Binance (higher price)
+**Example flows**:
+- **GalaChain → Ethereum**: Buy GALA on GSwap (cheaper) → Bridge to Ethereum → Sell on Binance (higher price)
+- **GalaChain → Solana**: Buy GSOL on GSwap → Bridge to Solana → Sell on Jupiter
+- **Solana → GalaChain**: Buy GALA on Jupiter → Bridge to GalaChain → Sell on GSwap
+
+**Note**: Bridge execution is disabled by default (`CROSS_CHAIN_ARB_BRIDGE_ENABLED=false`). When disabled, the bot detects and reports opportunities but does not execute bridge transactions.
 
 #### Risk-Adjusted Profit Calculation
 
@@ -451,8 +460,12 @@ The volatility risk scales with the square root of bridge time, using historical
 Cross-chain arbitrage can be configured via environment variables:
 
 ```bash
-# Enable cross-chain arbitrage detection
+# Enable cross-chain arbitrage detection (GalaChain <-> Ethereum <-> Solana)
 export CROSS_CHAIN_ARB_ENABLED=true
+
+# Enable bridge execution for cross-chain arbitrage
+# When false (default), only detects and reports opportunities without executing bridges
+export CROSS_CHAIN_ARB_BRIDGE_ENABLED=false
 
 # Minimum spread required (percentage)
 export CROSS_CHAIN_MIN_SPREAD_PCT=3.0
@@ -469,8 +482,8 @@ export CROSS_CHAIN_VOLATILITY_WINDOW_MIN=60
 export CROSS_CHAIN_DEFAULT_VOLATILITY_BPS=200
 export CROSS_CHAIN_CONFIDENCE_MULTIPLIER=2.0
 
-# Allowed tokens for cross-chain arb
-export CROSS_CHAIN_ALLOWED_TOKENS=GALA,GUSDT,GUSDC
+# Allowed tokens for cross-chain arb (includes Solana-bridgeable tokens)
+export CROSS_CHAIN_ALLOWED_TOKENS=GALA,GUSDT,GUSDC,GSOL,GMEW,GTRUMP
 
 # Execution strategy: staged, immediate, or hedged
 export CROSS_CHAIN_EXECUTION_STRATEGY=staged
@@ -482,15 +495,18 @@ Or in `config.json`:
 {
   "cross_chain_arbitrage": {
     "enabled": true,
+    "bridge_enabled": false,
     "min_spread_percent": 3.0,
     "min_risk_adjusted_profit_bps": 100,
     "max_bridge_time_minutes": 30,
     "bridge_time_to_eth_min": 15,
     "bridge_time_to_gala_min": 15,
+    "bridge_time_to_solana_min": 10,
+    "bridge_time_from_solana_min": 10,
     "volatility_window_minutes": 60,
     "default_volatility_bps": 200,
     "confidence_multiplier": 2.0,
-    "allowed_tokens": ["GALA", "GUSDT", "GUSDC"],
+    "allowed_tokens": ["GALA", "GUSDT", "GUSDC", "GSOL", "GMEW", "GTRUMP"],
     "execution_strategy": "staged"
   }
 }
@@ -498,11 +514,13 @@ Or in `config.json`:
 
 #### Bridge Cost Estimates
 
-| Token | To Ethereum | To GalaChain |
-|-------|-------------|--------------|
-| GALA | 40 bps | 65 bps |
-| GWETH | 75 bps | 100 bps |
-| GUSDC/GUSDT | 50 bps | 75 bps |
+| Token | To Ethereum | To GalaChain | To Solana | From Solana |
+|-------|-------------|--------------|-----------|-------------|
+| GALA | 40 bps | 65 bps | 50 bps | 55 bps |
+| GWETH | 75 bps | 100 bps | - | - |
+| GUSDC/GUSDT | 50 bps | 75 bps | - | - |
+| GSOL | - | - | 40 bps | 45 bps |
+| GMEW/GTRUMP | - | - | 45 bps | 50 bps |
 
 #### Slack Notifications
 
@@ -747,10 +765,15 @@ export KRAKEN_API_KEY=your_key
 export KRAKEN_SECRET=your_secret
 export KRAKEN_TRADING_ENABLED=false
 
-# GSwap DEX (for trading and bridging)
+# GSwap DEX (for trading)
 export GSWAP_PRIVATE_KEY=your_private_key
-export GSWAP_WALLET_ADDRESS=your_wallet_address
+# GSwap executor requires EIP-55 checksummed address
+export GSWAP_WALLET_ADDRESS=your_checksummed_wallet_address
 export GSWAP_TRADING_ENABLED=false
+
+# Bridge wallet address (uses different casing than GSwap executor)
+# GalaChain bridge API requires non-checksummed address format
+export GALACHAIN_BRIDGE_WALLET_ADDRESS=your_non_checksummed_wallet_address
 
 # Ethereum RPC (for bridging Ethereum → GalaChain)
 export ETH_RPC_URL=https://eth.llamarpc.com
@@ -1037,9 +1060,13 @@ All CEX integrations use [CCXT](https://github.com/ccxt/ccxt) for unified exchan
 ```bash
 # GSwap (DEX)
 GSWAP_PRIVATE_KEY=0x...          # Ethereum-compatible private key
-GSWAP_WALLET_ADDRESS=0x...       # Optional (derived from key)
+GSWAP_WALLET_ADDRESS=0x...       # EIP-55 checksummed address (required for GSwap executor)
 GSWAP_TRADING_ENABLED=true
 GSWAP_MAX_TRADE_SIZE=100
+
+# Bridge wallet address (different casing than GSwap executor)
+# GalaChain bridge API requires non-checksummed address format
+GALACHAIN_BRIDGE_WALLET_ADDRESS=0x...  # Non-checksummed address for bridge operations
 
 # Binance
 BINANCE_API_KEY=...
@@ -1047,6 +1074,10 @@ BINANCE_SECRET=...
 BINANCE_TRADING_ENABLED=true
 BINANCE_MAX_TRADE_SIZE=100
 ```
+
+**Important**: The GSwap executor and bridge require different address formats:
+- `GSWAP_WALLET_ADDRESS`: EIP-55 checksummed (e.g., `0x0e5137178b1737A73e521A4e76327d184EddB275`)
+- `GALACHAIN_BRIDGE_WALLET_ADDRESS`: Non-checksummed (e.g., `0x0E5137178b1737a73E521a4E76327D184EddB275`)
 
 ## Future Enhancements
 

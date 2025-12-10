@@ -32,19 +32,23 @@ type VolatilityConfig struct {
 	ConfidenceMultiplier float64 `json:"confidence_multiplier"` // Default: 2.0
 
 	// Bridge time estimates by direction
-	BridgeTimeToEthMin   int `json:"bridge_time_to_eth_min"`   // Default: 15
-	BridgeTimeToGalaMin  int `json:"bridge_time_to_gala_min"`  // Default: 15
+	BridgeTimeToEthMin     int `json:"bridge_time_to_eth_min"`     // Default: 15
+	BridgeTimeToGalaMin    int `json:"bridge_time_to_gala_min"`    // Default: 15
+	BridgeTimeToSolanaMin  int `json:"bridge_time_to_solana_min"`  // Default: 10
+	BridgeTimeFromSolanaMin int `json:"bridge_time_from_solana_min"` // Default: 10
 }
 
 // DefaultVolatilityConfig returns sensible defaults.
 func DefaultVolatilityConfig() *VolatilityConfig {
 	return &VolatilityConfig{
-		WindowMinutes:        60,
-		MinSamples:           10,
-		DefaultVolatilityBps: 200, // 2% default volatility
-		ConfidenceMultiplier: 2.0, // ~95% confidence
-		BridgeTimeToEthMin:   15,
-		BridgeTimeToGalaMin:  15,
+		WindowMinutes:         60,
+		MinSamples:            10,
+		DefaultVolatilityBps:  200, // 2% default volatility
+		ConfidenceMultiplier:  2.0, // ~95% confidence
+		BridgeTimeToEthMin:    15,
+		BridgeTimeToGalaMin:   15,
+		BridgeTimeToSolanaMin:  10, // Solana bridges are faster
+		BridgeTimeFromSolanaMin: 10,
 	}
 }
 
@@ -225,14 +229,27 @@ func (v *VolatilityModel) GetBridgeCost(token string, direction string) int {
 	case "GUSDC", "GUSDT", "USDC", "USDT":
 		// Stablecoins are standard cost
 		baseCostBps = 50
+	case "GSOL", "SOL":
+		// Solana native token
+		baseCostBps = 30 // Lower fees on Solana
+	case "GMEW", "MEW", "GTRUMP", "TRUMP":
+		// Solana meme tokens
+		baseCostBps = 35
 	}
 
-	// Direction adjustment (Ethereum gas can vary)
-	if direction == "to_ethereum" {
+	// Direction adjustment (gas costs vary by chain)
+	switch direction {
+	case "to_ethereum":
 		// No additional cost - just GalaChain transaction
-	} else if direction == "to_galachain" {
+	case "to_galachain":
 		// Ethereum gas cost
 		baseCostBps += 25 // Additional ETH gas cost
+	case "to_solana":
+		// GalaChain → Solana bridge cost
+		baseCostBps += 10 // Lower than ETH
+	case "from_solana":
+		// Solana → GalaChain bridge cost
+		baseCostBps += 15 // Solana gas is cheap
 	}
 
 	return baseCostBps
@@ -240,10 +257,16 @@ func (v *VolatilityModel) GetBridgeCost(token string, direction string) int {
 
 // GetBridgeTime returns the estimated bridge time in minutes.
 func (v *VolatilityModel) GetBridgeTime(direction string) int {
-	if direction == "to_ethereum" {
+	switch direction {
+	case "to_ethereum":
 		return v.config.BridgeTimeToEthMin
+	case "to_solana":
+		return v.config.BridgeTimeToSolanaMin
+	case "from_solana":
+		return v.config.BridgeTimeFromSolanaMin
+	default:
+		return v.config.BridgeTimeToGalaMin
 	}
-	return v.config.BridgeTimeToGalaMin
 }
 
 // CalculateRiskAdjustedProfit calculates profit minus volatility risk.
@@ -331,6 +354,7 @@ type ExchangeCategory string
 const (
 	ExchangeCategoryGalaChain ExchangeCategory = "galachain" // GSwap, GalaChain DEX
 	ExchangeCategoryEthereum  ExchangeCategory = "ethereum"  // CEXs, Ethereum DEXs
+	ExchangeCategorySolana    ExchangeCategory = "solana"    // Jupiter, Solana DEXs
 )
 
 // GetExchangeCategory returns the category for an exchange.
@@ -338,6 +362,8 @@ func GetExchangeCategory(exchange string) ExchangeCategory {
 	switch exchange {
 	case "gswap":
 		return ExchangeCategoryGalaChain
+	case "jupiter", "solana":
+		return ExchangeCategorySolana
 	default:
 		// All CEXs operate on Ethereum side (withdrawals/deposits)
 		return ExchangeCategoryEthereum
@@ -358,6 +384,10 @@ func GetBridgeDirection(fromExchange, toExchange string) string {
 		return "to_ethereum"
 	} else if fromCat == ExchangeCategoryEthereum && toCat == ExchangeCategoryGalaChain {
 		return "to_galachain"
+	} else if fromCat == ExchangeCategoryGalaChain && toCat == ExchangeCategorySolana {
+		return "to_solana"
+	} else if fromCat == ExchangeCategorySolana && toCat == ExchangeCategoryGalaChain {
+		return "from_solana"
 	}
-	return "" // No bridge needed
+	return "" // No bridge needed or unsupported bridge path
 }

@@ -734,6 +734,7 @@ type CrossChainOpportunity struct {
 	TradeSize         string
 	ExpectedProfit    string
 	IsRecommended     bool
+	BridgeEnabled     bool // Whether bridge execution is enabled
 }
 
 // NotifyCrossChainOpportunity sends a notification about a cross-chain arbitrage opportunity.
@@ -787,11 +788,17 @@ func (s *SlackNotifier) NotifyCrossChainOpportunity(opp *CrossChainOpportunity) 
 		})
 	}
 
+	// Add bridge execution status
+	bridgeStatus := "🔴 Bridge Execution: DISABLED (detection only)"
+	if opp.BridgeEnabled {
+		bridgeStatus = "🟢 Bridge Execution: ENABLED"
+	}
+
 	blocks = append(blocks, slackBlock{
 		Type: "context",
 		Text: &slackText{
 			Type: "mrkdwn",
-			Text: fmt.Sprintf("Detected at %s | Risk-adjusted profit accounts for price volatility during bridge", time.Now().Format(time.RFC3339)),
+			Text: fmt.Sprintf("%s | Detected at %s", bridgeStatus, time.Now().Format(time.RFC3339)),
 		},
 	})
 

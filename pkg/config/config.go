@@ -119,16 +119,19 @@ type ArbitrageSettings struct {
 // CrossChainArbitrageSettings holds cross-chain arbitrage configuration.
 type CrossChainArbitrageSettings struct {
 	// Enable/disable
-	Enabled bool `json:"enabled"` // Enable cross-chain arbitrage detection
+	Enabled       bool `json:"enabled"`        // Enable cross-chain arbitrage detection
+	BridgeEnabled bool `json:"bridge_enabled"` // Enable bridge execution for cross-chain arbitrage (default: false)
 
 	// Profit thresholds
 	MinSpreadPercent         float64 `json:"min_spread_percent"`           // Minimum spread % before considering (default: 3.0)
 	MinRiskAdjustedProfitBps int     `json:"min_risk_adjusted_profit_bps"` // Minimum risk-adjusted profit (default: 100)
 
 	// Bridge parameters
-	MaxBridgeTimeMinutes int `json:"max_bridge_time_minutes"` // Maximum acceptable bridge time (default: 30)
-	BridgeTimeToEthMin   int `json:"bridge_time_to_eth_min"`  // Estimated bridge time to Ethereum (default: 15)
-	BridgeTimeToGalaMin  int `json:"bridge_time_to_gala_min"` // Estimated bridge time to GalaChain (default: 15)
+	MaxBridgeTimeMinutes    int `json:"max_bridge_time_minutes"`    // Maximum acceptable bridge time (default: 30)
+	BridgeTimeToEthMin      int `json:"bridge_time_to_eth_min"`     // Estimated bridge time to Ethereum (default: 15)
+	BridgeTimeToGalaMin     int `json:"bridge_time_to_gala_min"`    // Estimated bridge time to GalaChain (default: 15)
+	BridgeTimeToSolanaMin   int `json:"bridge_time_to_solana_min"`  // Estimated bridge time to Solana (default: 10)
+	BridgeTimeFromSolanaMin int `json:"bridge_time_from_solana_min"` // Estimated bridge time from Solana (default: 10)
 
 	// Volatility settings
 	VolatilityWindowMinutes  int     `json:"volatility_window_minutes"`   // Window for volatility calculation (default: 60)
@@ -147,18 +150,21 @@ type CrossChainArbitrageSettings struct {
 func DefaultCrossChainArbitrageSettings() CrossChainArbitrageSettings {
 	return CrossChainArbitrageSettings{
 		Enabled:                  false, // Disabled by default for safety
+		BridgeEnabled:            false, // Bridge execution disabled by default for safety
 		MinSpreadPercent:         3.0,   // 3% minimum spread
 		MinRiskAdjustedProfitBps: 100,   // 1% minimum risk-adjusted profit
 		MaxBridgeTimeMinutes:     30,
 		BridgeTimeToEthMin:       15,
 		BridgeTimeToGalaMin:      15,
+		BridgeTimeToSolanaMin:    10, // Solana bridges are faster
+		BridgeTimeFromSolanaMin:  10,
 		VolatilityWindowMinutes:  60,
 		VolatilityBufferPercent:  2.0,
 		DefaultVolatilityBps:     200,
 		ConfidenceMultiplier:     2.0,
 		AutoExecute:              false,
 		RequireConfirmation:      true,
-		AllowedTokens:            []string{"GALA", "GUSDT", "GUSDC"},
+		AllowedTokens:            []string{"GALA", "GUSDT", "GUSDC", "GSOL", "GMEW", "GTRUMP"},
 		ExecutionStrategy:        "staged", // Default to staged execution
 	}
 }
@@ -380,6 +386,9 @@ func (c *Config) applyEnvOverrides() {
 	// Cross-chain arbitrage settings
 	if v := os.Getenv("CROSS_CHAIN_ARB_ENABLED"); v != "" {
 		c.CrossChainArbitrage.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("CROSS_CHAIN_ARB_BRIDGE_ENABLED"); v != "" {
+		c.CrossChainArbitrage.BridgeEnabled = strings.ToLower(v) == "true"
 	}
 	if v := os.Getenv("CROSS_CHAIN_ARB_MIN_SPREAD_PERCENT"); v != "" {
 		if val, err := parseFloat(v); err == nil {

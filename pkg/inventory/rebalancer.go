@@ -257,14 +257,23 @@ func (r *AutoRebalancer) performCheck(ctx context.Context) {
 func (r *AutoRebalancer) executeRebalance(ctx context.Context, rec *RebalanceRecommendation) {
 	// Determine bridge direction based on exchanges
 	var direction bridge.BridgeDirection
-	if rec.FromExchange == "gswap" {
+	fromGalaChain := rec.FromExchange == "gswap"
+	toGalaChain := rec.ToExchange == "gswap"
+	fromSolana := rec.FromExchange == "jupiter" || rec.FromExchange == "solana"
+	toSolana := rec.ToExchange == "jupiter" || rec.ToExchange == "solana"
+
+	if fromGalaChain && toSolana {
+		direction = bridge.BridgeToSolana
+	} else if fromSolana && toGalaChain {
+		direction = bridge.BridgeFromSolana
+	} else if fromGalaChain {
 		direction = bridge.BridgeToEthereum
-	} else if rec.ToExchange == "gswap" {
+	} else if toGalaChain {
 		direction = bridge.BridgeToGalaChain
 	} else {
-		// Both are CEXs - can't bridge between them directly
-		// Would need to go through one of the chains first
-		r.recordFailure(fmt.Errorf("cannot bridge directly between %s and %s", rec.FromExchange, rec.ToExchange))
+		// Both are CEXs/non-GalaChain - can't bridge between them directly
+		// Would need to go through GalaChain first
+		r.recordFailure(fmt.Errorf("cannot bridge directly between %s and %s - must route through GalaChain", rec.FromExchange, rec.ToExchange))
 		return
 	}
 
@@ -526,9 +535,19 @@ func mapCurrencyToBridgeToken(currency string) string {
 		return "GWBTC"
 	case "BENE":
 		return "BENE"
+	case "SOL", "GSOL":
+		return "GSOL"
+	case "MEW", "GMEW":
+		return "GMEW"
+	case "TRUMP", "GTRUMP":
+		return "GTRUMP"
 	default:
-		// Check if it's already a bridge token
+		// Check if it's already a bridge token in Ethereum tokens
 		if _, ok := bridge.SupportedTokens[currency]; ok {
+			return currency
+		}
+		// Check if it's a Solana bridge token
+		if _, ok := bridge.SolanaBridgeTokens[currency]; ok {
 			return currency
 		}
 		return ""

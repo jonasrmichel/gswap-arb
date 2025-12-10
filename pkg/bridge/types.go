@@ -203,8 +203,17 @@ var SolanaBridgeTokens = map[string]BridgeToken{
 		// MEW on Solana (native)
 		SolanaMint: "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
 	},
-	// Note: GSOL (wrapped SOL on GalaChain) is NOT bridgeable back to Solana via GalaConnect.
-	// SOL can only be bridged FROM Solana TO GalaChain (where it becomes GSOL), not the other direction.
+	"GSOL": {
+		Symbol:          "GSOL",
+		Decimals:        9,
+		GalaChainSymbol: "GSOL",
+		Collection:      "GSOL",
+		Category:        "Unit",
+		Type:            "none",
+		AdditionalKey:   "none",
+		// Native SOL on Solana (wrapped SOL mint address)
+		SolanaMint: "So11111111111111111111111111111111111111112",
+	},
 }
 
 // GetSolanaBridgeToken returns the Solana bridge token configuration for a symbol.

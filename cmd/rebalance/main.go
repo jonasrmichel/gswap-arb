@@ -125,9 +125,13 @@ Environment Variables:
 		cancel()
 	}()
 
+	// Get bridge wallet address (may differ from GSwap executor due to checksum requirements)
+	bridgeWalletAddr := os.Getenv("GALACHAIN_BRIDGE_WALLET_ADDRESS")
+
 	// Create bridge executor
 	bridgeExec, err := bridge.NewBridgeExecutor(&bridge.BridgeConfig{
 		GalaChainPrivateKey: pk,
+		GalaChainAddress:    bridgeWalletAddr, // Use specific address if provided
 		EthereumPrivateKey:  pk,
 		EthereumRPCURL:      ethRPCURL,
 	})
