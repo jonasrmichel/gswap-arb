@@ -340,6 +340,12 @@ func (b *BridgeExecutor) BridgeToEthereum(ctx context.Context, req *BridgeReques
 	// Determine if using cross-rate (check for galaExchangeCrossRate in fee data)
 	_, hasCrossRate := feeData["galaExchangeCrossRate"]
 
+	// Ensure recipient address has 0x prefix for Ethereum bridges
+	recipientAddress := toAddress
+	if !strings.HasPrefix(recipientAddress, "0x") {
+		recipientAddress = "0x" + recipientAddress
+	}
+
 	// Build the message for signing (this is what gets hashed for EIP-712)
 	// Note: destinationChainId should be numeric for EIP-712 signing
 	signMessage := map[string]interface{}{
@@ -353,7 +359,7 @@ func (b *BridgeExecutor) BridgeToEthereum(ctx context.Context, req *BridgeReques
 		},
 		"destinationChainId":    2, // Numeric for EIP-712
 		"quantity":              req.Amount.Text('f', 0),
-		"recipient":             strings.TrimPrefix(toAddress, "0x"),
+		"recipient":             recipientAddress,
 		"destinationChainTxFee": feeData,
 	}
 
@@ -395,7 +401,7 @@ func (b *BridgeExecutor) BridgeToEthereum(ctx context.Context, req *BridgeReques
 		},
 		"destinationChainId":    2, // Ethereum chain ID (numeric)
 		"quantity":              req.Amount.Text('f', 0),
-		"recipient":             strings.TrimPrefix(toAddress, "0x"),
+		"recipient":             recipientAddress, // Must include 0x prefix for Ethereum bridges
 		"destinationChainTxFee": feeData,
 		"signature":             signature,
 		"prefix":                prefix,
