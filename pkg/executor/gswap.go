@@ -330,12 +330,39 @@ func (g *GSwapExecutor) PlaceMarketOrder(ctx context.Context, pair string, side 
 	var amountIn *big.Float
 
 	if side == OrderSideBuy {
-		// Buying base with quote: tokenIn=quote, tokenOut=base
+		// Buying base with quote: we want to sell tokenIn (quote) to get tokenOut (base)
+		// The amount parameter represents how much base (tokenOut) we want
+		// We need to figure out how much quote (tokenIn) we need to provide
 		tokenIn = g.getGalaChainKey(quoteSymbol)
 		tokenOut = g.getGalaChainKey(baseSymbol)
-		// For buy, amount is in base units - need to get quote first
-		// For simplicity, we'll get a quote and use the amount as output
-		return nil, fmt.Errorf("buy orders on GSwap require quoting first - use GetQuote then PlaceSwap")
+
+		// Get a quote to determine how much tokenIn we need
+		// First, get a quote to find the rate
+		testAmount := big.NewFloat(1.0)
+		testQuote, zeroForOne, err := g.getQuote(ctx, tokenIn, tokenOut, testAmount)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get quote for buy: %w", err)
+		}
+
+		// Calculate rate from test quote
+		var outAmountStr string
+		if zeroForOne {
+			outAmountStr = strings.TrimPrefix(testQuote.Data.Amount1, "-")
+		} else {
+			outAmountStr = strings.TrimPrefix(testQuote.Data.Amount0, "-")
+		}
+		testOut := new(big.Float)
+		testOut.SetString(outAmountStr)
+
+		// Rate = output per input
+		// For buy, we want `amount` of base, so we need amount/rate of quote
+		// Add 5% buffer for slippage on the input side
+		if testOut.Sign() <= 0 {
+			return nil, fmt.Errorf("invalid quote rate for buy order")
+		}
+		rate := new(big.Float).Quo(testOut, testAmount)
+		amountIn = new(big.Float).Quo(amount, rate)
+		amountIn = new(big.Float).Mul(amountIn, big.NewFloat(1.05)) // 5% buffer
 	} else {
 		// Selling base for quote: tokenIn=base, tokenOut=quote
 		tokenIn = g.getGalaChainKey(baseSymbol)
@@ -347,7 +374,7 @@ func (g *GSwapExecutor) PlaceMarketOrder(ctx context.Context, pair string, side 
 		return nil, fmt.Errorf("unknown token in pair: %s", pair)
 	}
 
-	// Get quote first
+	// Get quote for the actual trade
 	quote, zeroForOne, err := g.getQuote(ctx, tokenIn, tokenOut, amountIn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get quote: %w", err)
