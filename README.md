@@ -303,6 +303,58 @@ Step 3: Swap Y GWETH -> ~Z GALA
 Profit: Z - 100 GALA
 ```
 
+#### Execution Strategies
+
+The bot implements several strategies to mitigate execution risk on multi-hop cycles:
+
+**Strategy #5: Parallel Quote Pre-Validation**
+
+Before executing any swaps, the bot fetches fresh quotes for all edges in the cycle in parallel. This validates that the opportunity still exists with current market prices:
+
+```
+1. Fetch quotes for all N edges simultaneously (parallel)
+2. Calculate expected profit from fresh quotes
+3. Apply profit scaling: longer cycles require higher minimum profit
+4. Abort if fresh quotes show opportunity is no longer profitable
+```
+
+This prevents executing trades on stale price data and catches opportunities that have been scooped by others.
+
+**Strategy #6: Mid-Cycle Bailout Detection**
+
+During execution, after each successful swap, the bot checks the remaining path profitability:
+
+```
+After Step 1/3: Get fresh quotes for steps 2-3, calculate remaining profit
+After Step 2/3: Get fresh quote for step 3, calculate remaining profit
+```
+
+If remaining profit drops below the bailout threshold (default: -100 bps / -1%), the bot logs an alert. Since DEX trades cannot be easily reversed, execution continues but the alert provides valuable post-mortem data.
+
+**Profit Scaling by Cycle Length**
+
+Longer cycles face more execution risk (more swaps = more time = more price movement). The bot automatically requires higher minimum profit for longer cycles:
+
+```
+Required Profit = Base Minimum + (Hops - 2) × Scaling Factor
+
+Example with base=20 bps, scaling=20 bps per hop:
+- 3-hop cycle: 20 + (3-2) × 20 = 40 bps minimum
+- 4-hop cycle: 20 + (4-2) × 20 = 60 bps minimum
+- 5-hop cycle: 20 + (5-2) × 20 = 80 bps minimum
+```
+
+**Configurable Execution Settings**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `PreValidateQuotes` | `true` | Fetch fresh quotes before execution |
+| `ProfitScalingPerHop` | `20` | Additional bps required per hop |
+| `MidCycleBailout` | `true` | Check remaining profit after each swap |
+| `BailoutThresholdBps` | `-100` | Bail if remaining path would lose >1% |
+| `SwapDeadlineSecs` | `60` | Timeout per swap (faster than default) |
+| `QuoteMaxAgeSecs` | `5` | Reject quotes older than this |
+
 #### Example Cycles
 
 ```

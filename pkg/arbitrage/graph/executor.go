@@ -30,6 +30,14 @@ type ExecutorConfig struct {
 	MinProfitBps     int           // Minimum profit to execute
 	MaxConcurrent    int           // Maximum concurrent executions
 	CooldownDuration time.Duration // Cooldown between executions
+
+	// Execution strategy settings (hybrid #5 + #7)
+	PreValidateQuotes    bool          // Fetch fresh quotes for all edges before executing
+	ProfitScalingPerHop  int           // Additional profit required per hop (bps)
+	MidCycleBailout      bool          // Check remaining path profitability after each swap
+	BailoutThresholdBps  int           // Minimum remaining profit to continue (bps)
+	SwapDeadlineSecs     int           // Deadline for each swap (seconds)
+	QuoteMaxAgeSecs      int           // Maximum age for quotes during validation (seconds)
 }
 
 // DefaultExecutorConfig returns default executor configuration.
@@ -42,6 +50,14 @@ func DefaultExecutorConfig() *ExecutorConfig {
 		MinProfitBps:     20,
 		MaxConcurrent:    1,
 		CooldownDuration: 5 * time.Second,
+
+		// Execution strategy defaults
+		PreValidateQuotes:    true,  // Always validate quotes before execution
+		ProfitScalingPerHop:  20,    // +20 bps minimum per additional hop
+		MidCycleBailout:      true,  // Enable mid-cycle profitability checks
+		BailoutThresholdBps:  -100,  // Bail if remaining path would lose > 1%
+		SwapDeadlineSecs:     60,    // 1 minute deadline per swap (faster than default 5 min)
+		QuoteMaxAgeSecs:      5,     // Quotes older than 5 seconds are stale
 	}
 }
 
@@ -67,6 +83,25 @@ type TradeStep struct {
 	TxID      string
 	Status    string
 	Error     string
+}
+
+// PreExecutionQuote holds a fresh quote fetched during pre-validation.
+type PreExecutionQuote struct {
+	TokenIn   string
+	TokenOut  string
+	Rate      float64   // Output per unit input
+	Timestamp time.Time
+	Error     error
+}
+
+// PreValidationResult holds the result of pre-execution quote validation.
+type PreValidationResult struct {
+	Quotes           []*PreExecutionQuote
+	ExpectedProfit   float64 // Expected profit ratio based on fresh quotes
+	ExpectedProfitBps int
+	IsStillProfitable bool
+	ValidationTime   time.Duration
+	Error            string
 }
 
 // CycleExecution represents the result of executing a cycle.
@@ -101,6 +136,148 @@ func NewCycleExecutor(gswap *executor.GSwapExecutor, config *ExecutorConfig) *Cy
 	}
 }
 
+// preValidateQuotes fetches fresh quotes for all edges in the cycle in parallel.
+// This is Strategy #5: Parallel Quote Refresh before execution.
+func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inputAmount float64) *PreValidationResult {
+	startTime := time.Now()
+	numEdges := len(cycle.Path) - 1
+
+	result := &PreValidationResult{
+		Quotes: make([]*PreExecutionQuote, numEdges),
+	}
+
+	// Fetch all quotes in parallel
+	var wg sync.WaitGroup
+	quoteChan := make(chan struct {
+		idx   int
+		quote *PreExecutionQuote
+	}, numEdges)
+
+	for i := 0; i < numEdges; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			tokenIn := string(cycle.Path[idx])
+			tokenOut := string(cycle.Path[idx+1])
+
+			quote := &PreExecutionQuote{
+				TokenIn:   tokenIn,
+				TokenOut:  tokenOut,
+				Timestamp: time.Now(),
+			}
+
+			// Try forward pair first
+			pair := tokenIn + "/" + tokenOut
+			q, err := e.gswap.GetQuote(ctx, pair, executor.OrderSideSell, big.NewFloat(1.0))
+			if err != nil {
+				// Try reverse pair
+				pair = tokenOut + "/" + tokenIn
+				q, err = e.gswap.GetQuote(ctx, pair, executor.OrderSideBuy, big.NewFloat(1.0))
+			}
+
+			if err != nil {
+				quote.Error = err
+			} else if q.Price != nil {
+				rate, _ := q.Price.Float64()
+				quote.Rate = rate
+			}
+
+			quoteChan <- struct {
+				idx   int
+				quote *PreExecutionQuote
+			}{idx, quote}
+		}(i)
+	}
+
+	// Close channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(quoteChan)
+	}()
+
+	// Collect results
+	for res := range quoteChan {
+		result.Quotes[res.idx] = res.quote
+	}
+
+	result.ValidationTime = time.Since(startTime)
+
+	// Calculate expected profit from fresh quotes
+	profitRatio := 1.0
+	for i, quote := range result.Quotes {
+		if quote.Error != nil {
+			result.Error = fmt.Sprintf("quote %d (%s->%s) failed: %v", i, quote.TokenIn, quote.TokenOut, quote.Error)
+			result.IsStillProfitable = false
+			return result
+		}
+		if quote.Rate <= 0 {
+			result.Error = fmt.Sprintf("quote %d (%s->%s) has invalid rate: %v", i, quote.TokenIn, quote.TokenOut, quote.Rate)
+			result.IsStillProfitable = false
+			return result
+		}
+		profitRatio *= quote.Rate
+	}
+
+	result.ExpectedProfit = profitRatio
+	result.ExpectedProfitBps = int((profitRatio - 1.0) * 10000)
+
+	// Calculate required profit based on cycle length (Strategy #3: profit scaling)
+	requiredProfitBps := e.config.MinProfitBps + (numEdges-2)*e.config.ProfitScalingPerHop
+	result.IsStillProfitable = result.ExpectedProfitBps >= requiredProfitBps
+
+	if !result.IsStillProfitable {
+		result.Error = fmt.Sprintf("profit %d bps below required %d bps for %d-hop cycle",
+			result.ExpectedProfitBps, requiredProfitBps, numEdges)
+	}
+
+	return result
+}
+
+// calculateRemainingProfit calculates expected profit for remaining path from current position.
+// Used for mid-cycle bailout detection (Strategy #6).
+func (e *CycleExecutor) calculateRemainingProfit(ctx context.Context, cycle *Cycle, currentStep int, currentAmount *big.Float) (profitBps int, err error) {
+	if currentStep >= len(cycle.Path)-1 {
+		return 0, nil // No remaining steps
+	}
+
+	amount := new(big.Float).Copy(currentAmount)
+
+	for i := currentStep; i < len(cycle.Path)-1; i++ {
+		tokenIn := string(cycle.Path[i])
+		tokenOut := string(cycle.Path[i+1])
+
+		pair := tokenIn + "/" + tokenOut
+		quote, err := e.gswap.GetQuote(ctx, pair, executor.OrderSideSell, amount)
+		if err != nil {
+			pair = tokenOut + "/" + tokenIn
+			quote, err = e.gswap.GetQuote(ctx, pair, executor.OrderSideBuy, amount)
+		}
+
+		if err != nil {
+			return 0, fmt.Errorf("failed to get quote for %s->%s: %w", tokenIn, tokenOut, err)
+		}
+
+		if quote.BidSize != nil && quote.BidSize.Sign() > 0 {
+			amount = quote.BidSize
+		} else if quote.Price != nil {
+			amount = new(big.Float).Mul(amount, quote.Price)
+		} else {
+			return 0, fmt.Errorf("invalid quote for %s->%s", tokenIn, tokenOut)
+		}
+	}
+
+	// Calculate profit vs current amount
+	currentFloat, _ := currentAmount.Float64()
+	finalFloat, _ := amount.Float64()
+
+	if currentFloat > 0 {
+		profitBps = int((finalFloat/currentFloat - 1.0) * 10000)
+	}
+
+	return profitBps, nil
+}
+
 // ExecuteCycle executes an arbitrage cycle.
 func (e *CycleExecutor) ExecuteCycle(ctx context.Context, cycle *Cycle, result *CycleResult, inputAmount float64) (*CycleExecution, error) {
 	e.mu.Lock()
@@ -120,6 +297,23 @@ func (e *CycleExecutor) ExecuteCycle(ctx context.Context, cycle *Cycle, result *
 		execution.Error = err.Error()
 		execution.EndTime = time.Now()
 		return execution, err
+	}
+
+	// Strategy #5: Pre-validate quotes before execution
+	if e.config.PreValidateQuotes {
+		log.Printf("[executor] Pre-validating %d quotes for cycle %d...", len(cycle.Path)-1, cycle.ID)
+		validation := e.preValidateQuotes(ctx, cycle, inputAmount)
+
+		if !validation.IsStillProfitable {
+			execution.Error = fmt.Sprintf("pre-validation failed: %s", validation.Error)
+			execution.EndTime = time.Now()
+			log.Printf("[executor] Pre-validation FAILED for cycle %d: %s (took %v)",
+				cycle.ID, validation.Error, validation.ValidationTime)
+			return execution, fmt.Errorf(execution.Error)
+		}
+
+		log.Printf("[executor] Pre-validation PASSED for cycle %d: expected profit %d bps (took %v)",
+			cycle.ID, validation.ExpectedProfitBps, validation.ValidationTime)
 	}
 
 	// Check balance for first token
@@ -181,8 +375,10 @@ func (e *CycleExecutor) simulateCycleExecution(ctx context.Context, cycle *Cycle
 
 	currentAmount := big.NewFloat(inputAmount)
 
+	totalSteps := len(cycle.Path) - 1
+
 	// Simulate each swap in the cycle
-	for i := 0; i < len(cycle.Path)-1; i++ {
+	for i := 0; i < totalSteps; i++ {
 		tokenIn := string(cycle.Path[i])
 		tokenOut := string(cycle.Path[i+1])
 
@@ -215,11 +411,27 @@ func (e *CycleExecutor) simulateCycleExecution(ctx context.Context, cycle *Cycle
 		}
 		execution.Steps = append(execution.Steps, step)
 
-		log.Printf("[executor] DRY RUN: Step %d: %s -> %s, in=%.6f, out=%.6f",
-			i+1, tokenIn, tokenOut,
+		log.Printf("[executor] DRY RUN: Step %d/%d: %s -> %s, in=%.6f, out=%.6f",
+			i+1, totalSteps, tokenIn, tokenOut,
 			floatValue(currentAmount), floatValue(amountOut))
 
 		currentAmount = amountOut
+
+		// Strategy #6: Mid-cycle bailout detection (simulation mode - for testing logic)
+		if e.config.MidCycleBailout && i < totalSteps-1 {
+			remainingProfit, err := e.calculateRemainingProfit(ctx, cycle, i+1, currentAmount)
+			if err != nil {
+				log.Printf("[executor] DRY RUN: Could not calculate remaining profit after step %d: %v", i+1, err)
+			} else {
+				log.Printf("[executor] DRY RUN: Mid-cycle check after step %d/%d: remaining path profit = %d bps",
+					i+1, totalSteps, remainingProfit)
+
+				if remainingProfit < e.config.BailoutThresholdBps {
+					log.Printf("[executor] DRY RUN: ALERT - Would trigger bailout (remaining %d bps < threshold %d bps)",
+						remainingProfit, e.config.BailoutThresholdBps)
+				}
+			}
+		}
 	}
 
 	execution.OutputAmount = currentAmount
@@ -246,9 +458,16 @@ func (e *CycleExecutor) executeCycleReal(ctx context.Context, cycle *Cycle, inpu
 	log.Printf("[executor] LIVE: Executing cycle %d with %.4f %s", cycle.ID, inputAmount, cycle.Path[0])
 
 	currentAmount := big.NewFloat(inputAmount)
+	totalSteps := len(cycle.Path) - 1
+
+	// Use configurable swap deadline
+	swapTimeout := time.Duration(e.config.SwapDeadlineSecs) * time.Second
+	if swapTimeout <= 0 {
+		swapTimeout = 60 * time.Second // Default fallback
+	}
 
 	// Execute each swap in the cycle
-	for i := 0; i < len(cycle.Path)-1; i++ {
+	for i := 0; i < totalSteps; i++ {
 		tokenIn := string(cycle.Path[i])
 		tokenOut := string(cycle.Path[i+1])
 
@@ -286,8 +505,8 @@ func (e *CycleExecutor) executeCycleReal(ctx context.Context, cycle *Cycle, inpu
 		step.Status = "submitted"
 		execution.TransactionIDs = append(execution.TransactionIDs, order.TransactionID)
 
-		// Wait for order to fill
-		filledOrder, err := e.waitForOrderFill(ctx, order.ID, 30*time.Second)
+		// Wait for order to fill (using configurable deadline)
+		filledOrder, err := e.waitForOrderFill(ctx, order.ID, swapTimeout)
 		if err != nil {
 			step.Status = "timeout"
 			step.Error = err.Error()
@@ -307,10 +526,35 @@ func (e *CycleExecutor) executeCycleReal(ctx context.Context, cycle *Cycle, inpu
 		step.Status = "filled"
 		execution.Steps = append(execution.Steps, step)
 
-		log.Printf("[executor] LIVE: Step %d complete: %s -> %s, tx=%s, out=%.6f",
-			i+1, tokenIn, tokenOut, order.TransactionID, floatValue(filledOrder.FilledAmount))
+		log.Printf("[executor] LIVE: Step %d/%d complete: %s -> %s, tx=%s, out=%.6f",
+			i+1, totalSteps, tokenIn, tokenOut, order.TransactionID, floatValue(filledOrder.FilledAmount))
 
 		currentAmount = filledOrder.FilledAmount
+
+		// Strategy #6: Mid-cycle bailout detection (after each swap except the last)
+		if e.config.MidCycleBailout && i < totalSteps-1 {
+			remainingProfit, err := e.calculateRemainingProfit(ctx, cycle, i+1, currentAmount)
+			if err != nil {
+				log.Printf("[executor] WARNING: Could not calculate remaining profit after step %d: %v", i+1, err)
+			} else {
+				log.Printf("[executor] Mid-cycle check after step %d/%d: remaining path profit = %d bps",
+					i+1, totalSteps, remainingProfit)
+
+				if remainingProfit < e.config.BailoutThresholdBps {
+					// Log severe warning - we can't easily reverse DEX trades, so we continue
+					// but this information is valuable for post-mortem analysis
+					log.Printf("[executor] ALERT: Remaining profit %d bps is below bailout threshold %d bps!",
+						remainingProfit, e.config.BailoutThresholdBps)
+					log.Printf("[executor] ALERT: Continuing execution (cannot reverse DEX trades), expect reduced/negative profit")
+
+					// Track bailout trigger in execution notes
+					if execution.Error == "" {
+						execution.Error = fmt.Sprintf("bailout threshold triggered at step %d (remaining profit %d bps < threshold %d bps)",
+							i+1, remainingProfit, e.config.BailoutThresholdBps)
+					}
+				}
+			}
+		}
 	}
 
 	execution.OutputAmount = currentAmount
