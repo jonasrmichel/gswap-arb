@@ -70,6 +70,7 @@ type TokenInfo struct {
 	ID               int     `json:"id"`
 	Symbol           string  `json:"symbol"`
 	Name             string  `json:"name"`
+	CoinGeckoID      string  `json:"coinGeckoId"`
 	GalaPrice        float64 `json:"galaPrice"`
 	CoinGeckoPrice   float64 `json:"coinGeckoPrice"`
 	SpreadPercentage float64 `json:"spreadPercentage"`

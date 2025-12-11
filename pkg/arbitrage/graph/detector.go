@@ -189,6 +189,7 @@ func (d *Detector) EvaluateAll() []*CycleResult {
 }
 
 // RefreshPrices fetches current prices from the API and updates all edges.
+// Note: This does NOT increment PriceUpdates counter. Use RefreshPricesIncremental instead.
 func (d *Detector) RefreshPrices(ctx context.Context) error {
 	d.mu.RLock()
 	if !d.initialized {
@@ -205,6 +206,69 @@ func (d *Detector) RefreshPrices(ctx context.Context) error {
 
 	UpdateGraphFromTokenPrices(graph, tokens)
 	return nil
+}
+
+// RefreshPricesIncremental fetches current prices from CoinGecko (with arb.gala.com fallback)
+// and uses HandlePriceUpdate for incremental updates. This properly increments the PriceUpdates
+// counter and only re-evaluates cycles affected by changed edges.
+// Returns all profitable cycles found across all updated edges.
+func (d *Detector) RefreshPricesIncremental(ctx context.Context) ([]*CycleResult, error) {
+	d.mu.RLock()
+	if !d.initialized {
+		d.mu.RUnlock()
+		return nil, fmt.Errorf("detector not initialized")
+	}
+	graph := d.graph
+	d.mu.RUnlock()
+
+	// Fetch live prices from CoinGecko (with fallback to arb.gala.com)
+	prices, err := d.apiClient.FetchLivePrices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch live prices: %w", err)
+	}
+
+	// Track all profitable results
+	var allResults []*CycleResult
+	seen := make(map[int]bool) // Track seen cycle IDs to avoid duplicates
+
+	// Update each edge and collect results
+	edges := graph.Edges()
+	for _, edge := range edges {
+		fromPrice, fromOK := prices[string(edge.From)]
+		toPrice, toOK := prices[string(edge.To)]
+
+		if fromOK && toOK && fromPrice > 0 && toPrice > 0 {
+			// Calculate rate: fromPrice / toPrice
+			rate := fromPrice / toPrice
+
+			// Only update if rate has changed meaningfully (> 0.0001% to filter float noise)
+			// This uses relative difference to handle rates of different magnitudes
+			if rateChanged(edge.Rate, rate, 1e-6) {
+				// Use HandlePriceUpdate which increments stats and evaluates affected cycles
+				results := d.HandlePriceUpdate(string(edge.From), string(edge.To), rate, 0)
+				for _, r := range results {
+					if !seen[r.Cycle.ID] {
+						seen[r.Cycle.ID] = true
+						allResults = append(allResults, r)
+					}
+				}
+			}
+		}
+	}
+
+	return allResults, nil
+}
+
+// rateChanged returns true if the rate has changed by more than the relative tolerance.
+func rateChanged(oldRate, newRate, tolerance float64) bool {
+	if oldRate == 0 {
+		return newRate != 0
+	}
+	relDiff := (newRate - oldRate) / oldRate
+	if relDiff < 0 {
+		relDiff = -relDiff
+	}
+	return relDiff > tolerance
 }
 
 // Graph returns the underlying graph (for inspection).

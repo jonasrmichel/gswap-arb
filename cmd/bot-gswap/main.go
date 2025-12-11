@@ -37,11 +37,12 @@ var (
 	autoExecute   = flag.Bool("auto-execute", false, "Automatically execute profitable cycles")
 
 	// Display settings
-	verbose    = flag.Bool("verbose", true, "Enable verbose output")
-	logFile    = flag.String("log", "bot-gswap.log", "Log file path (empty to disable)")
-	showGraph  = flag.Bool("show-graph", false, "Print graph summary at startup")
-	showCycles = flag.Bool("show-cycles", false, "Print all cycles at startup")
-	continuous = flag.Bool("continuous", true, "Run continuously (poll for prices)")
+	verbose        = flag.Bool("verbose", true, "Enable verbose output")
+	logFile        = flag.String("log", "bot-gswap.log", "Log file path (empty to disable)")
+	showGraph      = flag.Bool("show-graph", false, "Print graph summary at startup")
+	showCycles     = flag.Bool("show-cycles", false, "Print all cycles at startup")
+	continuous     = flag.Bool("continuous", true, "Run continuously (poll for prices)")
+	statusInterval = flag.Duration("status-interval", 60*time.Second, "Status report interval")
 
 	// Credentials (can also use env vars)
 	privateKey    = flag.String("private-key", "", "GSwap private key (or GSWAP_PRIVATE_KEY env)")
@@ -232,8 +233,8 @@ func main() {
 	pollTicker := time.NewTicker(*pollInterval)
 	defer pollTicker.Stop()
 
-	// Status ticker (every minute)
-	statusTicker := time.NewTicker(60 * time.Second)
+	// Status ticker
+	statusTicker := time.NewTicker(*statusInterval)
 	defer statusTicker.Stop()
 
 	// Main loop
@@ -245,19 +246,19 @@ func main() {
 			return
 
 		case <-pollTicker.C:
-			// Refresh prices from API
-			if err := detector.RefreshPrices(ctx); err != nil {
+			// Refresh prices incrementally - this updates edges that changed
+			// and only re-evaluates cycles affected by those edges
+			results, err := detector.RefreshPricesIncremental(ctx)
+			if err != nil {
 				if *verbose {
 					logf("[WARN] Failed to refresh prices: %v\n", err)
 				}
 				continue
 			}
 
-			// Evaluate all cycles
-			results := detector.EvaluateAll()
-
+			// Results are already filtered to profitable cycles from changed edges
 			if *verbose && len(results) > 0 {
-				logf("[%s] Found %d profitable cycles\n",
+				logf("[%s] Found %d profitable cycles from price updates\n",
 					time.Now().Format("15:04:05"), len(results))
 			}
 
@@ -388,7 +389,7 @@ func printStatus(d *graph.Detector, exec *graph.CycleExecutor) {
 	logln()
 	logln(strings.Repeat("-", 60))
 	logf("[%s] Status\n", time.Now().Format("15:04:05"))
-	logf("  Price updates: %d\n", stats.PriceUpdates)
+	logf("  Price updates: %d (edges with rate changes)\n", stats.PriceUpdates)
 	logf("  Opportunities found: %d\n", stats.OpportunitiesFound)
 	if !stats.LastUpdateTime.IsZero() {
 		logf("  Last update: %s ago\n", time.Since(stats.LastUpdateTime).Round(time.Second))
