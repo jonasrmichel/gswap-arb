@@ -19,6 +19,7 @@
   - OKX
   - Bybit
 
+- **Graph-based DEX arbitrage**: Finds profitable cycles within GSwap using pre-computed cycle enumeration
 - **Real-time arbitrage detection**: Scans for price discrepancies across exchanges
 - **Trade execution**: Execute arbitrage trades via CCXT (10+ CEX exchanges), GSwap DEX, and Jupiter (Solana)
 - **Chain arbitrage**: Multi-hop arbitrage detection across 2-5 exchanges
@@ -46,6 +47,8 @@ gswap-arb/
 │   │   └── main.go           # WebSocket-based bot (real-time)
 │   ├── bot-trader/
 │   │   └── main.go           # Trading bot with execution
+│   ├── bot-gswap/
+│   │   └── main.go           # Graph-based GSwap cycle detector
 │   ├── bridge/
 │   │   └── main.go           # Bridge CLI for cross-chain transfers
 │   └── rebalance/
@@ -55,7 +58,14 @@ gswap-arb/
 │   │   ├── detector.go       # Arbitrage detection logic
 │   │   ├── chain.go          # Multi-hop chain arbitrage
 │   │   ├── crosschain.go     # Cross-chain arbitrage with bridge support
-│   │   └── volatility.go     # Price volatility model for risk assessment
+│   │   ├── volatility.go     # Price volatility model for risk assessment
+│   │   └── graph/            # Graph-based cycle detection
+│   │       ├── types.go      # Graph data structures
+│   │       ├── graph.go      # Graph operations
+│   │       ├── cycles.go     # DFS cycle enumeration
+│   │       ├── evaluate.go   # Cycle profit evaluation
+│   │       ├── api.go        # arb.gala.com API client
+│   │       └── detector.go   # Main detector orchestration
 │   ├── config/
 │   │   └── config.go         # Configuration management
 │   ├── executor/
@@ -186,6 +196,78 @@ go build -o gswap-trader ./cmd/bot-trader
 ```
 
 **Warning**: Live trading involves real funds. Always test thoroughly in dry-run mode first.
+
+### GSwap Graph Bot (DEX Cycle Detection)
+
+The graph-based bot focuses solely on finding arbitrage cycles within GalaChain DEX (GSwap). It uses a pre-computed cycle enumeration algorithm for fast detection.
+
+```bash
+# Build the graph bot
+go build -o bot-gswap ./cmd/bot-gswap
+
+# One-shot mode (evaluate once and exit)
+./bot-gswap -continuous=false
+
+# Continuous monitoring with default settings
+./bot-gswap
+
+# Show graph structure at startup
+./bot-gswap -show-graph=true
+
+# Show all enumerated cycles
+./bot-gswap -show-cycles=true
+
+# Custom settings
+./bot-gswap -max-cycle=4 -min-profit=20 -poll=10s
+```
+
+#### How Graph-Based Detection Works
+
+1. **Graph Construction**: Fetches all pools from `arb.gala.com/api/pools` and builds a directed graph where:
+   - **Nodes** = Tokens (GALA, GUSDT, GWETH, etc.)
+   - **Edges** = Trading pairs (bidirectional with different rates)
+
+2. **Cycle Enumeration**: Uses DFS to find all simple cycles up to a maximum length (default 5 hops). For GSwap's ~27 tokens and ~66 pools, this discovers ~3,000 unique cycles in <300ms.
+
+3. **Cycle Indexing**: Builds an index mapping each edge to the cycles containing it, enabling O(k) lookup when prices change.
+
+4. **Profit Evaluation**: For each cycle, calculates profit using the formula:
+   ```
+   profit_ratio = rate₁ × rate₂ × ... × rateₙ × (1-fee₁) × (1-fee₂) × ... × (1-feeₙ)
+   ```
+   Cycles with `profit_ratio > 1.0` are profitable.
+
+5. **Continuous Monitoring**: Polls token prices every N seconds and re-evaluates all cycles for opportunities.
+
+#### Graph Bot Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-api` | `https://arb.gala.com/api` | GSwap API URL |
+| `-max-cycle` | `5` | Maximum cycle length to detect |
+| `-min-profit` | `10` | Minimum profit in basis points |
+| `-fee` | `100` | Default fee in basis points (1% = 100 bps) |
+| `-poll` | `5s` | Price polling interval |
+| `-continuous` | `true` | Run continuously (vs one-shot) |
+| `-show-graph` | `false` | Print graph summary at startup |
+| `-show-cycles` | `false` | Print all enumerated cycles |
+| `-log` | `bot-gswap.log` | Log file path (empty to disable) |
+| `-verbose` | `true` | Enable verbose output |
+
+#### Example Cycles
+
+```
+3-hop: GALA -> GUSDC -> GWETH -> GALA
+4-hop: GALA -> GOSMI -> GUSDC -> GWETH -> GALA
+5-hop: GUSDC -> GSUSDT -> GUSDT -> GOSMI -> GWBTC -> GUSDC
+```
+
+#### Break-Even Thresholds
+
+With 1% fee per trade:
+- **3-hop cycle**: Needs ~3.03% gross spread to break even
+- **4-hop cycle**: Needs ~4.06% gross spread to break even
+- **5-hop cycle**: Needs ~5.10% gross spread to break even
 
 ### Bridge CLI (Cross-Chain Transfers)
 
@@ -702,6 +784,21 @@ Transaction: 0x1234...abcd
 | `--cross-chain` | `false` | Enable cross-chain arbitrage detection |
 | `--cross-chain-min-spread` | `3.0` | Minimum spread % for cross-chain arbitrage |
 
+#### GSwap Graph Bot (`./cmd/bot-gswap`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-api` | `https://arb.gala.com/api` | GSwap API URL |
+| `-max-cycle` | `5` | Maximum cycle length to detect |
+| `-min-profit` | `10` | Minimum profit in basis points |
+| `-fee` | `100` | Default fee in basis points (1% = 100 bps) |
+| `-poll` | `5s` | Price polling interval |
+| `-continuous` | `true` | Run continuously (vs one-shot) |
+| `-show-graph` | `false` | Print graph summary at startup |
+| `-show-cycles` | `false` | Print all enumerated cycles |
+| `-log` | `bot-gswap.log` | Log file path (empty to disable) |
+| `-verbose` | `true` | Enable verbose output |
+
 #### Bridge CLI (`./cmd/bridge`)
 
 | Flag | Default | Description |
@@ -1092,6 +1189,8 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Circuit breaker for rebalancing failures
 - [x] Cross-chain arbitrage detection with volatility-aware risk adjustment
 - [x] Solana DEX support via Jupiter aggregator
+- [x] Graph-based DEX cycle detection for GSwap
+- [ ] Trade execution for graph-detected cycles
 - [ ] Cross-chain arbitrage execution (Phase 5)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
