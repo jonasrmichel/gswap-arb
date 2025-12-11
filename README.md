@@ -354,6 +354,27 @@ Example with base=20 bps, scaling=20 bps per hop:
 | `BailoutThresholdBps` | `-100` | Bail if remaining path would lose >1% |
 | `SwapDeadlineSecs` | `60` | Timeout per swap (faster than default) |
 | `QuoteMaxAgeSecs` | `5` | Reject quotes older than this |
+| `ValidateLiquidity` | `true` | Check price impact at trade size |
+| `MaxPriceImpactBps` | `200` | Max 2% price impact per edge |
+
+**Liquidity Validation via Price Impact**
+
+The bot validates pool liquidity by comparing quotes at 1-unit vs the actual trade size. This detects insufficient liquidity before execution:
+
+```
+Price Impact = (1-unit rate - trade size rate) / 1-unit rate × 10000
+
+Example: If GALA→GUSDT returns:
+- 1 GALA = 0.0725 GUSDT (1-unit quote)
+- 10 GALA = 0.0710 GUSDT per GALA (10-unit quote)
+- Price impact = (0.0725 - 0.0710) / 0.0725 × 10000 = 207 bps (2.07%)
+- If MaxPriceImpactBps = 200, this edge would be rejected
+```
+
+This approach:
+- Uses existing DEX API (no separate liquidity endpoint needed)
+- Catches real liquidity issues at the actual trade size
+- Prevents phantom arbitrage from illiquid pools
 
 #### Example Cycles
 

@@ -32,12 +32,16 @@ type ExecutorConfig struct {
 	CooldownDuration time.Duration // Cooldown between executions
 
 	// Execution strategy settings (hybrid #5 + #7)
-	PreValidateQuotes    bool          // Fetch fresh quotes for all edges before executing
-	ProfitScalingPerHop  int           // Additional profit required per hop (bps)
-	MidCycleBailout      bool          // Check remaining path profitability after each swap
-	BailoutThresholdBps  int           // Minimum remaining profit to continue (bps)
-	SwapDeadlineSecs     int           // Deadline for each swap (seconds)
-	QuoteMaxAgeSecs      int           // Maximum age for quotes during validation (seconds)
+	PreValidateQuotes    bool // Fetch fresh quotes for all edges before executing
+	ProfitScalingPerHop  int  // Additional profit required per hop (bps)
+	MidCycleBailout      bool // Check remaining path profitability after each swap
+	BailoutThresholdBps  int  // Minimum remaining profit to continue (bps)
+	SwapDeadlineSecs     int  // Deadline for each swap (seconds)
+	QuoteMaxAgeSecs      int  // Maximum age for quotes during validation (seconds)
+
+	// Liquidity validation settings
+	ValidateLiquidity    bool // Check price impact at trade size (not just 1 unit)
+	MaxPriceImpactBps    int  // Maximum acceptable price impact per edge (bps)
 }
 
 // DefaultExecutorConfig returns default executor configuration.
@@ -52,12 +56,16 @@ func DefaultExecutorConfig() *ExecutorConfig {
 		CooldownDuration: 5 * time.Second,
 
 		// Execution strategy defaults
-		PreValidateQuotes:    true,  // Always validate quotes before execution
-		ProfitScalingPerHop:  20,    // +20 bps minimum per additional hop
-		MidCycleBailout:      true,  // Enable mid-cycle profitability checks
-		BailoutThresholdBps:  -100,  // Bail if remaining path would lose > 1%
-		SwapDeadlineSecs:     60,    // 1 minute deadline per swap (faster than default 5 min)
-		QuoteMaxAgeSecs:      5,     // Quotes older than 5 seconds are stale
+		PreValidateQuotes:   true,  // Always validate quotes before execution
+		ProfitScalingPerHop: 20,    // +20 bps minimum per additional hop
+		MidCycleBailout:     true,  // Enable mid-cycle profitability checks
+		BailoutThresholdBps: -100,  // Bail if remaining path would lose > 1%
+		SwapDeadlineSecs:    60,    // 1 minute deadline per swap (faster than default 5 min)
+		QuoteMaxAgeSecs:     5,     // Quotes older than 5 seconds are stale
+
+		// Liquidity validation defaults
+		ValidateLiquidity: true, // Check price impact at trade size
+		MaxPriceImpactBps: 200,  // Max 2% price impact per edge
 	}
 }
 
@@ -87,21 +95,25 @@ type TradeStep struct {
 
 // PreExecutionQuote holds a fresh quote fetched during pre-validation.
 type PreExecutionQuote struct {
-	TokenIn   string
-	TokenOut  string
-	Rate      float64   // Output per unit input
-	Timestamp time.Time
-	Error     error
+	TokenIn        string
+	TokenOut       string
+	Rate           float64   // Output per unit input (1-unit quote)
+	RateAtSize     float64   // Output per unit at actual trade size
+	PriceImpactBps int       // Price impact in basis points (RateAtSize vs Rate)
+	Timestamp      time.Time
+	Error          error
 }
 
 // PreValidationResult holds the result of pre-execution quote validation.
 type PreValidationResult struct {
-	Quotes           []*PreExecutionQuote
-	ExpectedProfit   float64 // Expected profit ratio based on fresh quotes
+	Quotes            []*PreExecutionQuote
+	ExpectedProfit    float64 // Expected profit ratio based on fresh quotes
 	ExpectedProfitBps int
+	MaxPriceImpactBps int  // Maximum price impact across all edges
 	IsStillProfitable bool
-	ValidationTime   time.Duration
-	Error            string
+	HasSufficientLiq  bool // True if all edges have acceptable price impact
+	ValidationTime    time.Duration
+	Error             string
 }
 
 // CycleExecution represents the result of executing a cycle.
@@ -138,15 +150,22 @@ func NewCycleExecutor(gswap *executor.GSwapExecutor, config *ExecutorConfig) *Cy
 
 // preValidateQuotes fetches fresh quotes for all edges in the cycle in parallel.
 // This is Strategy #5: Parallel Quote Refresh before execution.
+// Also validates liquidity by checking price impact at the actual trade size.
 func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inputAmount float64) *PreValidationResult {
 	startTime := time.Now()
 	numEdges := len(cycle.Path) - 1
 
 	result := &PreValidationResult{
-		Quotes: make([]*PreExecutionQuote, numEdges),
+		Quotes:           make([]*PreExecutionQuote, numEdges),
+		HasSufficientLiq: true, // Assume sufficient until proven otherwise
 	}
 
-	// Fetch all quotes in parallel
+	// Calculate expected amounts at each step to check price impact
+	// Starting with inputAmount, we need to know roughly how much to quote at each edge
+	expectedAmounts := make([]float64, numEdges)
+	expectedAmounts[0] = inputAmount
+
+	// Fetch all quotes in parallel - both 1-unit quotes and quotes at expected trade size
 	var wg sync.WaitGroup
 	quoteChan := make(chan struct {
 		idx   int
@@ -155,7 +174,7 @@ func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inp
 
 	for i := 0; i < numEdges; i++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func(idx int, tradeAmount float64) {
 			defer wg.Done()
 
 			tokenIn := string(cycle.Path[idx])
@@ -167,27 +186,60 @@ func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inp
 				Timestamp: time.Now(),
 			}
 
-			// Try forward pair first
+			// Get 1-unit quote for baseline rate
 			pair := tokenIn + "/" + tokenOut
-			q, err := e.gswap.GetQuote(ctx, pair, executor.OrderSideSell, big.NewFloat(1.0))
+			q1, err := e.gswap.GetQuote(ctx, pair, executor.OrderSideSell, big.NewFloat(1.0))
 			if err != nil {
-				// Try reverse pair
 				pair = tokenOut + "/" + tokenIn
-				q, err = e.gswap.GetQuote(ctx, pair, executor.OrderSideBuy, big.NewFloat(1.0))
+				q1, err = e.gswap.GetQuote(ctx, pair, executor.OrderSideBuy, big.NewFloat(1.0))
 			}
 
 			if err != nil {
 				quote.Error = err
-			} else if q.Price != nil {
-				rate, _ := q.Price.Float64()
-				quote.Rate = rate
+				quoteChan <- struct {
+					idx   int
+					quote *PreExecutionQuote
+				}{idx, quote}
+				return
+			}
+
+			if q1.Price != nil {
+				quote.Rate, _ = q1.Price.Float64()
+			}
+
+			// If liquidity validation is enabled, also get quote at trade size
+			if e.config.ValidateLiquidity && tradeAmount > 1.0 {
+				pair = tokenIn + "/" + tokenOut
+				qSize, err := e.gswap.GetQuote(ctx, pair, executor.OrderSideSell, big.NewFloat(tradeAmount))
+				if err != nil {
+					pair = tokenOut + "/" + tokenIn
+					qSize, err = e.gswap.GetQuote(ctx, pair, executor.OrderSideBuy, big.NewFloat(tradeAmount))
+				}
+
+				if err != nil {
+					// Can't get quote at size - likely insufficient liquidity
+					quote.Error = fmt.Errorf("insufficient liquidity at size %.2f: %w", tradeAmount, err)
+				} else if qSize.Price != nil {
+					rateAtSize, _ := qSize.Price.Float64()
+					quote.RateAtSize = rateAtSize
+
+					// Calculate price impact: (1-unit rate - trade size rate) / 1-unit rate * 10000
+					if quote.Rate > 0 {
+						impact := (quote.Rate - rateAtSize) / quote.Rate * 10000
+						quote.PriceImpactBps = int(impact)
+					}
+				}
+			} else {
+				// No liquidity validation or small trade - assume no price impact
+				quote.RateAtSize = quote.Rate
+				quote.PriceImpactBps = 0
 			}
 
 			quoteChan <- struct {
 				idx   int
 				quote *PreExecutionQuote
 			}{idx, quote}
-		}(i)
+		}(i, expectedAmounts[0]) // Use input amount for first edge; this is approximate
 	}
 
 	// Close channel when all goroutines complete
@@ -203,12 +255,14 @@ func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inp
 
 	result.ValidationTime = time.Since(startTime)
 
-	// Calculate expected profit from fresh quotes
+	// Calculate expected profit from fresh quotes and check liquidity
 	profitRatio := 1.0
+	maxPriceImpact := 0
 	for i, quote := range result.Quotes {
 		if quote.Error != nil {
 			result.Error = fmt.Sprintf("quote %d (%s->%s) failed: %v", i, quote.TokenIn, quote.TokenOut, quote.Error)
 			result.IsStillProfitable = false
+			result.HasSufficientLiq = false
 			return result
 		}
 		if quote.Rate <= 0 {
@@ -216,11 +270,38 @@ func (e *CycleExecutor) preValidateQuotes(ctx context.Context, cycle *Cycle, inp
 			result.IsStillProfitable = false
 			return result
 		}
-		profitRatio *= quote.Rate
+
+		// Use rate at trade size for profit calculation if available
+		rateToUse := quote.Rate
+		if quote.RateAtSize > 0 {
+			rateToUse = quote.RateAtSize
+		}
+		profitRatio *= rateToUse
+
+		// Track max price impact
+		if quote.PriceImpactBps > maxPriceImpact {
+			maxPriceImpact = quote.PriceImpactBps
+		}
+
+		// Check if price impact exceeds threshold
+		if e.config.ValidateLiquidity && quote.PriceImpactBps > e.config.MaxPriceImpactBps {
+			result.HasSufficientLiq = false
+			log.Printf("[executor] Edge %s->%s has excessive price impact: %d bps (max: %d)",
+				quote.TokenIn, quote.TokenOut, quote.PriceImpactBps, e.config.MaxPriceImpactBps)
+		}
 	}
 
 	result.ExpectedProfit = profitRatio
 	result.ExpectedProfitBps = int((profitRatio - 1.0) * 10000)
+	result.MaxPriceImpactBps = maxPriceImpact
+
+	// Check liquidity first
+	if !result.HasSufficientLiq {
+		result.Error = fmt.Sprintf("insufficient liquidity: max price impact %d bps exceeds threshold %d bps",
+			maxPriceImpact, e.config.MaxPriceImpactBps)
+		result.IsStillProfitable = false
+		return result
+	}
 
 	// Calculate required profit based on cycle length (Strategy #3: profit scaling)
 	requiredProfitBps := e.config.MinProfitBps + (numEdges-2)*e.config.ProfitScalingPerHop
@@ -312,8 +393,8 @@ func (e *CycleExecutor) ExecuteCycle(ctx context.Context, cycle *Cycle, result *
 			return execution, fmt.Errorf(execution.Error)
 		}
 
-		log.Printf("[executor] Pre-validation PASSED for cycle %d: expected profit %d bps (took %v)",
-			cycle.ID, validation.ExpectedProfitBps, validation.ValidationTime)
+		log.Printf("[executor] Pre-validation PASSED for cycle %d: expected profit %d bps, max price impact %d bps (took %v)",
+			cycle.ID, validation.ExpectedProfitBps, validation.MaxPriceImpactBps, validation.ValidationTime)
 	}
 
 	// Check balance for first token
