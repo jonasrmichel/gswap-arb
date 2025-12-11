@@ -140,6 +140,35 @@ func (g *Graph) UpdateEdgeByIndex(edgeIdx int, rate, liquidity float64) error {
 	return nil
 }
 
+// UpdateEdgeNetRate updates an edge with a "net" rate that already includes fees.
+// Use this when the rate comes from a direct DEX quote which already accounts for fees.
+// The LogRate is calculated without applying additional fees.
+func (g *Graph) UpdateEdgeNetRate(from, to Token, netRate, liquidity float64) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	edgeKey := edgeKeyString(from, to)
+	edgeIdx, exists := g.edgeIndex[edgeKey]
+	if !exists {
+		return fmt.Errorf("edge %s -> %s does not exist", from, to)
+	}
+
+	edge := g.edges[edgeIdx]
+	edge.Rate = netRate
+	edge.Liquidity = liquidity
+	edge.Timestamp = time.Now()
+	edge.FeeBps = 0 // Mark as net rate (fee already included)
+
+	// LogRate = -log(rate) - NO fee adjustment since rate is already net
+	if netRate > 0 {
+		edge.LogRate = -math.Log(netRate)
+	} else {
+		edge.LogRate = math.Inf(1)
+	}
+
+	return nil
+}
+
 // GetEdge returns the edge between two tokens, or nil if it doesn't exist.
 func (g *Graph) GetEdge(from, to Token) *Edge {
 	g.mu.RLock()

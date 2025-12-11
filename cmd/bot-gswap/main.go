@@ -10,7 +10,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,20 +31,24 @@ var (
 	// Trading settings
 	enableTrading = flag.Bool("trade", false, "Enable trade execution (requires credentials)")
 	dryRun        = flag.Bool("dry-run", true, "Dry run mode - simulate trades without executing")
-	tradeSize     = flag.Float64("trade-size", 100, "Trade size for cycle execution")
-	maxTradeSize  = flag.Float64("max-trade-size", 1000, "Maximum trade size")
-	minTradeSize  = flag.Float64("min-trade-size", 10, "Minimum trade size")
+	tradeSize     = flag.Float64("trade-size", 1, "Trade size for cycle execution (small to avoid liquidity issues)")
+	maxTradeSize  = flag.Float64("max-trade-size", 10, "Maximum trade size (pools are illiquid)")
+	minTradeSize  = flag.Float64("min-trade-size", 0.1, "Minimum trade size")
 	execMinProfit = flag.Int("exec-min-profit", 50, "Minimum profit in bps to execute trade")
 	slippageBps   = flag.Int("slippage", 100, "Slippage tolerance in basis points")
 	autoExecute   = flag.Bool("auto-execute", false, "Automatically execute profitable cycles")
 
 	// Display settings
-	verbose        = flag.Bool("verbose", true, "Enable verbose output")
-	logFile        = flag.String("log", "bot-gswap.log", "Log file path (empty to disable)")
-	showGraph      = flag.Bool("show-graph", false, "Print graph summary at startup")
-	showCycles     = flag.Bool("show-cycles", false, "Print all cycles at startup")
-	continuous     = flag.Bool("continuous", true, "Run continuously (poll for prices)")
-	statusInterval = flag.Duration("status-interval", 60*time.Second, "Status report interval")
+	verbose           = flag.Bool("verbose", true, "Enable verbose output")
+	logFile           = flag.String("log", "bot-gswap.log", "Log file path (empty to disable)")
+	showGraph         = flag.Bool("show-graph", false, "Print graph summary at startup")
+	showCycles        = flag.Bool("show-cycles", false, "Print all cycles at startup")
+	continuous        = flag.Bool("continuous", true, "Run continuously (poll for prices)")
+	statusInterval    = flag.Duration("status-interval", 60*time.Second, "Status report interval")
+	throttleDuration  = flag.Duration("throttle", 30*time.Second, "Throttle: don't re-report same cycle within this duration")
+	throttleProfitBps = flag.Int("throttle-profit", 10, "Throttle: re-report if profit changes by this many bps")
+	maxOppsPerPoll    = flag.Int("max-opps", 5, "Max opportunities to print in detail per poll (0=unlimited)")
+	simAmount         = flag.Float64("sim-amount", 1, "Amount to use for simulation display")
 
 	// Credentials (can also use env vars)
 	privateKey    = flag.String("private-key", "", "GSwap private key (or GSWAP_PRIVATE_KEY env)")
@@ -50,6 +56,13 @@ var (
 )
 
 var logWriter io.Writer
+
+// Per-poll aggregation
+var (
+	pollOpportunities     []*graph.CycleResult
+	pollOpportunitiesMu   sync.Mutex
+	pollOpportunitiesLast time.Time
+)
 
 func main() {
 	flag.Parse()
@@ -133,40 +146,26 @@ func main() {
 		}
 	}
 
-	// Set up opportunity callback
+	// Configure throttling
+	detector.SetThrottling(*throttleDuration, *throttleProfitBps)
+
+	// Set up opportunity callback - aggregate opportunities during poll
 	detector.SetOpportunityCallback(func(result *graph.CycleResult) {
-		logln()
-		logln(strings.Repeat("*", 60))
-		logf("[OPPORTUNITY] %s\n", time.Now().Format("15:04:05"))
-		logf("  Cycle: %s\n", graph.FormatCycleResult(result))
-		logf("  Profit: %d bps (%.2f%%)\n", result.ProfitBps, float64(result.ProfitBps)/100)
-		logf("  Profit Ratio: %.6f\n", result.ProfitRatio)
-		logf("  Min Liquidity: %.2f\n", result.MinLiquidity)
+		pollOpportunitiesMu.Lock()
+		pollOpportunities = append(pollOpportunities, result)
+		pollOpportunitiesMu.Unlock()
 
-		// Simulate a trade with configured trade size
-		if result.Cycle != nil {
-			output, profit, fees, err := detector.SimulateCycleTrade(result.Cycle.ID, *tradeSize)
-			if err == nil {
-				logf("  Simulation (%.0f units): output=%.4f, profit=%.4f, fees=%.4f\n",
-					*tradeSize, output, profit, fees)
-			}
-		}
-
-		// Execute trade if conditions are met
+		// Execute trade if conditions are met (always execute immediately, don't aggregate)
 		if cycleExecutor != nil && *autoExecute && result.ProfitBps >= *execMinProfit {
-			logf("  -> Executing trade (profit %d bps >= threshold %d bps)\n", result.ProfitBps, *execMinProfit)
+			logf("[TRADE] Executing %s (profit %d bps >= threshold %d bps)\n",
+				graph.FormatCycleResult(result), result.ProfitBps, *execMinProfit)
 			execution, err := cycleExecutor.ExecuteCycle(ctx, result.Cycle, result, *tradeSize)
 			if err != nil {
-				logf("  -> Execution failed: %v\n", err)
+				logf("[TRADE] Execution failed: %v\n", err)
 			} else {
 				logln(graph.FormatExecution(execution))
 			}
-		} else if cycleExecutor != nil && result.ProfitBps < *execMinProfit {
-			logf("  -> Skipping execution (profit %d bps < threshold %d bps)\n", result.ProfitBps, *execMinProfit)
 		}
-
-		logln(strings.Repeat("*", 60))
-		logln()
 	})
 
 	// Initialize detector
@@ -246,9 +245,14 @@ func main() {
 			return
 
 		case <-pollTicker.C:
+			// Clear aggregated opportunities before this poll
+			pollOpportunitiesMu.Lock()
+			pollOpportunities = nil
+			pollOpportunitiesMu.Unlock()
+
 			// Refresh prices incrementally - this updates edges that changed
 			// and only re-evaluates cycles affected by those edges
-			results, err := detector.RefreshPricesIncremental(ctx)
+			_, err := detector.RefreshPricesIncremental(ctx)
 			if err != nil {
 				if *verbose {
 					logf("[WARN] Failed to refresh prices: %v\n", err)
@@ -256,11 +260,8 @@ func main() {
 				continue
 			}
 
-			// Results are already filtered to profitable cycles from changed edges
-			if *verbose && len(results) > 0 {
-				logf("[%s] Found %d profitable cycles from price updates\n",
-					time.Now().Format("15:04:05"), len(results))
-			}
+			// Print aggregated summary of new opportunities
+			printPollSummary(detector)
 
 		case <-statusTicker.C:
 			printStatus(detector, cycleExecutor)
@@ -328,6 +329,12 @@ func printConfig(cfg *graph.Config) {
 	logf("  - Min profit (report): %d bps (%.2f%%)\n", cfg.MinProfitBps, float64(cfg.MinProfitBps)/100)
 	logf("  - Default fee: %d bps (%.2f%%)\n", cfg.DefaultFeeBps, float64(cfg.DefaultFeeBps)/100)
 	logf("  - Poll interval: %v\n", cfg.PollInterval)
+	logln()
+	logln("Output Throttling:")
+	logf("  - Throttle duration: %v\n", *throttleDuration)
+	logf("  - Throttle profit change: %d bps\n", *throttleProfitBps)
+	logf("  - Max opps per poll: %d\n", *maxOppsPerPoll)
+	logf("  - Simulation amount: %.2f units\n", *simAmount)
 
 	if *enableTrading {
 		logln()
@@ -340,6 +347,91 @@ func printConfig(cfg *graph.Config) {
 		logf("  - Slippage tolerance: %d bps (%.2f%%)\n", *slippageBps, float64(*slippageBps)/100)
 		logf("  - Auto-execute: %v\n", *autoExecute)
 	}
+	logln()
+}
+
+func printPollSummary(d *graph.Detector) {
+	pollOpportunitiesMu.Lock()
+	opps := make([]*graph.CycleResult, len(pollOpportunities))
+	copy(opps, pollOpportunities)
+	pollOpportunitiesMu.Unlock()
+
+	if len(opps) == 0 {
+		return
+	}
+
+	// Sort by profit (highest first)
+	sort.Slice(opps, func(i, j int) bool {
+		return opps[i].ProfitBps > opps[j].ProfitBps
+	})
+
+	now := time.Now().Format("15:04:05")
+	logln()
+	logln(strings.Repeat("=", 60))
+	logf("[%s] NEW OPPORTUNITIES: %d cycles\n", now, len(opps))
+	logln(strings.Repeat("=", 60))
+
+	// Print top opportunities in detail
+	maxDetail := *maxOppsPerPoll
+	if maxDetail == 0 || maxDetail > len(opps) {
+		maxDetail = len(opps)
+	}
+
+	for i := 0; i < maxDetail; i++ {
+		r := opps[i]
+		logf("\n#%d %s\n", i+1, graph.FormatCycleResult(r))
+		logf("    Profit: %d bps (%.2f%%)  |  Ratio: %.6f\n",
+			r.ProfitBps, float64(r.ProfitBps)/100, r.ProfitRatio)
+
+		// Simulate trade
+		if r.Cycle != nil {
+			output, profit, fees, err := d.SimulateCycleTrade(r.Cycle.ID, *simAmount)
+			if err == nil {
+				logf("    Sim (%.2f units): out=%.6f, profit=%.6f, fees=%.6f\n",
+					*simAmount, output, profit, fees)
+			}
+		}
+	}
+
+	// Print summary of remaining
+	if len(opps) > maxDetail {
+		remaining := opps[maxDetail:]
+		logf("\n... and %d more opportunities:\n", len(remaining))
+
+		// Group remaining by profit tier
+		tier100plus := 0
+		tier50to100 := 0
+		tier10to50 := 0
+		tierUnder10 := 0
+
+		for _, r := range remaining {
+			switch {
+			case r.ProfitBps >= 100:
+				tier100plus++
+			case r.ProfitBps >= 50:
+				tier50to100++
+			case r.ProfitBps >= 10:
+				tier10to50++
+			default:
+				tierUnder10++
+			}
+		}
+
+		if tier100plus > 0 {
+			logf("    %d with >= 100 bps profit\n", tier100plus)
+		}
+		if tier50to100 > 0 {
+			logf("    %d with 50-99 bps profit\n", tier50to100)
+		}
+		if tier10to50 > 0 {
+			logf("    %d with 10-49 bps profit\n", tier10to50)
+		}
+		if tierUnder10 > 0 {
+			logf("    %d with < 10 bps profit\n", tierUnder10)
+		}
+	}
+
+	logln(strings.Repeat("=", 60))
 	logln()
 }
 

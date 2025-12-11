@@ -118,6 +118,11 @@ func BuildGraphFromPools(pools []Pool, defaultFeeBps int) *Graph {
 			continue
 		}
 
+		// Skip test tokens
+		if strings.HasPrefix(pool.TokenInSymbol, "Test") || strings.HasPrefix(pool.TokenOutSymbol, "Test") {
+			continue
+		}
+
 		tokenIn := Token(pool.TokenInSymbol)
 		tokenOut := Token(pool.TokenOutSymbol)
 
@@ -505,4 +510,181 @@ func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)
 	return f, err
+}
+
+// EdgeRate represents a direct rate quote for a trading edge.
+type EdgeRate struct {
+	From      string
+	To        string
+	Rate      float64 // How much "To" you get per 1 "From"
+	FeeBps    int     // Fee tier that provided this rate
+	Timestamp time.Time
+	Error     error
+}
+
+// FetchDirectEdgeRates fetches direct DEX quotes for all edges in the graph.
+// This queries the actual pool for each edge, ensuring accurate rates.
+// Returns a map of "From:To" -> EdgeRate
+func (c *APIClient) FetchDirectEdgeRates(ctx context.Context, edges []*Edge, maxConcurrent int) map[string]*EdgeRate {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 10
+	}
+
+	results := make(map[string]*EdgeRate)
+	var mu sync.Mutex
+
+	// Use a semaphore to limit concurrency
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+
+	for _, edge := range edges {
+		wg.Add(1)
+		go func(e *Edge) {
+			defer wg.Done()
+
+			sem <- struct{}{}        // acquire
+			defer func() { <-sem }() // release
+
+			key := string(e.From) + ":" + string(e.To)
+			result := &EdgeRate{
+				From:      string(e.From),
+				To:        string(e.To),
+				Timestamp: time.Now(),
+			}
+
+			// Fetch direct quote from DEX
+			rate, feeBps, err := c.FetchDirectPoolRate(ctx, string(e.From), string(e.To))
+			if err != nil {
+				result.Error = err
+			} else {
+				result.Rate = rate
+				result.FeeBps = feeBps
+			}
+
+			mu.Lock()
+			results[key] = result
+			mu.Unlock()
+		}(edge)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// FetchDirectPoolRate fetches the direct exchange rate for selling fromSymbol to get toSymbol.
+// Returns: rate (how much toSymbol per 1 fromSymbol), feeBps (fee tier used), error
+//
+// IMPORTANT: Only uses the 1% fee tier (feeTier100) because:
+// 1. Different fee tiers have different pools with vastly different rates
+// 2. Using "best rate" across tiers breaks bidirectional consistency checks
+// 3. 1% is the most common fee tier and likely has the most liquidity
+func (c *APIClient) FetchDirectPoolRate(ctx context.Context, fromSymbol, toSymbol string) (float64, int, error) {
+	tkFrom := gswapTokenKey{Collection: fromSymbol, Category: "Unit", Type: "none", AdditionalKey: "none"}
+	tkTo := gswapTokenKey{Collection: toSymbol, Category: "Unit", Type: "none", AdditionalKey: "none"}
+
+	// Order tokens (GalaChain requires token0 < token1 lexicographically)
+	token0, token1 := tkFrom, tkTo
+	fromIsToken0 := true
+	if strings.Compare(fromSymbol, toSymbol) > 0 {
+		token0, token1 = tkTo, tkFrom
+		fromIsToken0 = false
+	}
+
+	// Only use 1% fee tier for consistency
+	// Different fee tiers have completely different pools and rates
+	req := gswapQuoteRequest{
+		Token0:     token0,
+		Token1:     token1,
+		ZeroForOne: fromIsToken0,
+		Fee:        feeTier100, // 1% fee tier only
+		Amount:     "1",
+	}
+
+	rate, err := c.callGSwapQuoteWithAmounts(ctx, req, fromIsToken0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("no valid pool for %s -> %s: %w", fromSymbol, toSymbol, err)
+	}
+
+	return rate, feeTier100, nil
+}
+
+// FetchDirectEdgeRatesForGraph is a convenience method that fetches rates for all edges in a graph.
+// It validates:
+// 1. Bidirectional consistency - if A->B * B->A is far from 1, both edges are marked invalid
+// 2. Extreme rates - rates > 100 or < 0.01 indicate illiquid pools that won't work for practical trades
+func (c *APIClient) FetchDirectEdgeRatesForGraph(ctx context.Context, g *Graph) (map[string]*EdgeRate, error) {
+	edges := g.Edges()
+	if len(edges) == 0 {
+		return make(map[string]*EdgeRate), nil
+	}
+
+	log.Printf("[api] Fetching direct DEX quotes for %d edges...", len(edges))
+	start := time.Now()
+
+	rates := c.FetchDirectEdgeRates(ctx, edges, 20) // 20 concurrent requests
+
+	invalidatedConsistency := 0
+	invalidatedExtreme := 0
+
+	// First pass: filter out extreme rates
+	// Rates > 10 or < 0.1 indicate pools with significant price disparity
+	// These pools may quote for 1 unit but often fail for practical trade amounts
+	// due to insufficient liquidity. Conservative filtering is better than
+	// reporting phantom arbitrage opportunities.
+	for _, rate := range rates {
+		if rate.Error != nil {
+			continue
+		}
+
+		if rate.Rate > 10 || rate.Rate < 0.1 {
+			rate.Error = fmt.Errorf("extreme rate %g for %s->%s (likely illiquid)",
+				rate.Rate, rate.From, rate.To)
+			invalidatedExtreme++
+		}
+	}
+
+	// Second pass: validate bidirectional consistency
+	// For each pair A->B and B->A, check that A->B * B->A is close to 1
+	// If not, mark both as invalid (broken/illiquid pool)
+	for _, rate := range rates {
+		if rate.Error != nil {
+			continue
+		}
+
+		// Find reverse edge
+		reverseKey := rate.To + ":" + rate.From
+		reverseRate, hasReverse := rates[reverseKey]
+		if !hasReverse || reverseRate.Error != nil {
+			continue
+		}
+
+		// Check consistency: A->B * B->A should be ~1 for liquid pools
+		// With 1% fee per direction, expect ~0.98 for healthy pools
+		// Allow range 0.90 to 1.02 to account for fees and slippage
+		product := rate.Rate * reverseRate.Rate
+		if product < 0.90 || product > 1.02 {
+			rate.Error = fmt.Errorf("bidirectional inconsistency: %s->%s * %s->%s = %g (expected ~1)",
+				rate.From, rate.To, reverseRate.From, reverseRate.To, product)
+			reverseRate.Error = fmt.Errorf("bidirectional inconsistency: %s->%s * %s->%s = %g (expected ~1)",
+				reverseRate.From, reverseRate.To, rate.From, rate.To, product)
+			invalidatedConsistency += 2
+		}
+	}
+
+	// Count successes and failures
+	successes := 0
+	failures := 0
+	for _, r := range rates {
+		if r.Error != nil {
+			failures++
+		} else {
+			successes++
+		}
+	}
+
+	log.Printf("[api] Fetched %d/%d edge rates in %v (%d failed, %d extreme, %d inconsistent)",
+		successes, len(edges), time.Since(start).Round(time.Millisecond),
+		failures-invalidatedExtreme-invalidatedConsistency, invalidatedExtreme, invalidatedConsistency)
+
+	return rates, nil
 }

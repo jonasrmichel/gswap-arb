@@ -18,12 +18,23 @@ type Detector struct {
 	// Callback for profitable opportunities
 	onOpportunity func(*CycleResult)
 
+	// Throttling: track last reported profit for each cycle
+	lastReported     map[int]reportedOpportunity
+	throttleDuration time.Duration
+	profitChangeBps  int // Min profit change to re-report
+
 	// State
 	initialized bool
 	mu          sync.RWMutex
 
 	// Statistics
 	stats DetectorStats
+}
+
+// reportedOpportunity tracks when a cycle was last reported
+type reportedOpportunity struct {
+	Time      time.Time
+	ProfitBps int
 }
 
 // DetectorStats tracks detector performance metrics.
@@ -42,9 +53,22 @@ func NewDetector(config *Config) *Detector {
 	}
 
 	return &Detector{
-		config:    config,
-		apiClient: NewAPIClient(config.APIURL),
+		config:           config,
+		apiClient:        NewAPIClient(config.APIURL),
+		lastReported:     make(map[int]reportedOpportunity),
+		throttleDuration: 30 * time.Second, // Don't re-report same cycle within 30s
+		profitChangeBps:  10,               // Re-report if profit changes by 10+ bps
 	}
+}
+
+// SetThrottling configures opportunity throttling.
+// throttleDuration: minimum time before re-reporting the same cycle
+// profitChangeBps: re-report if profit changes by this many bps (even within throttle window)
+func (d *Detector) SetThrottling(throttleDuration time.Duration, profitChangeBps int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.throttleDuration = throttleDuration
+	d.profitChangeBps = profitChangeBps
 }
 
 // SetOpportunityCallback sets the callback for when profitable cycles are found.
@@ -52,6 +76,44 @@ func (d *Detector) SetOpportunityCallback(cb func(*CycleResult)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.onOpportunity = cb
+}
+
+// shouldReport returns true if this opportunity should be reported (not throttled).
+// Must be called with d.mu held for writing.
+func (d *Detector) shouldReport(result *CycleResult) bool {
+	cycleID := result.Cycle.ID
+	now := time.Now()
+
+	last, exists := d.lastReported[cycleID]
+	if !exists {
+		// Never reported - always report
+		return true
+	}
+
+	// Check if throttle duration has passed
+	if now.Sub(last.Time) >= d.throttleDuration {
+		return true
+	}
+
+	// Check if profit changed significantly
+	profitDiff := result.ProfitBps - last.ProfitBps
+	if profitDiff < 0 {
+		profitDiff = -profitDiff
+	}
+	if profitDiff >= d.profitChangeBps {
+		return true
+	}
+
+	return false
+}
+
+// markReported records that an opportunity was reported.
+// Must be called with d.mu held for writing.
+func (d *Detector) markReported(result *CycleResult) {
+	d.lastReported[result.Cycle.ID] = reportedOpportunity{
+		Time:      time.Now(),
+		ProfitBps: result.ProfitBps,
+	}
 }
 
 // Initialize fetches pools from API, builds the graph, and enumerates all cycles.
@@ -103,7 +165,7 @@ func (d *Detector) Initialize(ctx context.Context) error {
 }
 
 // HandlePriceUpdate updates an edge and evaluates affected cycles.
-// Returns profitable cycles found (if any).
+// Returns profitable cycles found (if any). Applies throttling to callbacks.
 func (d *Detector) HandlePriceUpdate(tokenIn, tokenOut string, rate, liquidity float64) []*CycleResult {
 	d.mu.RLock()
 	if !d.initialized {
@@ -134,21 +196,85 @@ func (d *Detector) HandlePriceUpdate(tokenIn, tokenOut string, rate, liquidity f
 	// Evaluate affected cycles
 	results := graph.EvaluateAffectedCycles(edgeIdx, index, minProfit)
 
-	// Update stats
+	// Update stats and trigger throttled callbacks
 	d.mu.Lock()
 	d.stats.PriceUpdates++
 	d.stats.LastUpdateTime = time.Now()
 	if len(results) > 0 {
 		d.stats.OpportunitiesFound += len(results)
 	}
-	d.mu.Unlock()
 
-	// Trigger callbacks for profitable opportunities
+	// Trigger callbacks for profitable opportunities (with throttling)
 	if callback != nil {
 		for _, result := range results {
-			callback(result)
+			if d.shouldReport(result) {
+				d.markReported(result)
+				// Call callback outside lock to avoid potential deadlock
+				d.mu.Unlock()
+				callback(result)
+				d.mu.Lock()
+			}
 		}
 	}
+	d.mu.Unlock()
+
+	return results
+}
+
+// HandleNetRateUpdate updates an edge with a net rate (fee already included) and evaluates affected cycles.
+// Use this when the rate comes from direct DEX quotes which already account for fees.
+// Returns profitable cycles found (if any). Applies throttling to callbacks.
+func (d *Detector) HandleNetRateUpdate(tokenIn, tokenOut string, netRate, liquidity float64) []*CycleResult {
+	d.mu.RLock()
+	if !d.initialized {
+		d.mu.RUnlock()
+		return nil
+	}
+	graph := d.graph
+	index := d.cycleIndex
+	minProfit := d.config.MinProfitBps
+	callback := d.onOpportunity
+	d.mu.RUnlock()
+
+	// Update the edge with net rate
+	from := Token(tokenIn)
+	to := Token(tokenOut)
+
+	if err := graph.UpdateEdgeNetRate(from, to, netRate, liquidity); err != nil {
+		// Edge doesn't exist - this is fine, not all token pairs have edges
+		return nil
+	}
+
+	// Get the edge index
+	edgeIdx := graph.GetEdgeIndex(from, to)
+	if edgeIdx < 0 {
+		return nil
+	}
+
+	// Evaluate affected cycles
+	results := graph.EvaluateAffectedCycles(edgeIdx, index, minProfit)
+
+	// Update stats and trigger throttled callbacks
+	d.mu.Lock()
+	d.stats.PriceUpdates++
+	d.stats.LastUpdateTime = time.Now()
+	if len(results) > 0 {
+		d.stats.OpportunitiesFound += len(results)
+	}
+
+	// Trigger callbacks for profitable opportunities (with throttling)
+	if callback != nil {
+		for _, result := range results {
+			if d.shouldReport(result) {
+				d.markReported(result)
+				// Call callback outside lock to avoid potential deadlock
+				d.mu.Unlock()
+				callback(result)
+				d.mu.Lock()
+			}
+		}
+	}
+	d.mu.Unlock()
 
 	return results
 }
@@ -208,9 +334,8 @@ func (d *Detector) RefreshPrices(ctx context.Context) error {
 	return nil
 }
 
-// RefreshPricesIncremental fetches current prices from CoinGecko (with arb.gala.com fallback)
-// and uses HandlePriceUpdate for incremental updates. This properly increments the PriceUpdates
-// counter and only re-evaluates cycles affected by changed edges.
+// RefreshPricesIncremental fetches direct DEX quotes for all edges and updates the graph.
+// This queries the actual GSwap pools for accurate rates (not derived from USD prices).
 // Returns all profitable cycles found across all updated edges.
 func (d *Detector) RefreshPricesIncremental(ctx context.Context) ([]*CycleResult, error) {
 	d.mu.RLock()
@@ -221,36 +346,51 @@ func (d *Detector) RefreshPricesIncremental(ctx context.Context) ([]*CycleResult
 	graph := d.graph
 	d.mu.RUnlock()
 
-	// Fetch live prices from CoinGecko (with fallback to arb.gala.com)
-	prices, err := d.apiClient.FetchLivePrices(ctx)
+	// Fetch direct DEX quotes for all edges
+	edgeRates, err := d.apiClient.FetchDirectEdgeRatesForGraph(ctx, graph)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch live prices: %w", err)
+		return nil, fmt.Errorf("failed to fetch edge rates: %w", err)
 	}
 
 	// Track all profitable results
 	var allResults []*CycleResult
 	seen := make(map[int]bool) // Track seen cycle IDs to avoid duplicates
 
-	// Update each edge and collect results
-	edges := graph.Edges()
-	for _, edge := range edges {
-		fromPrice, fromOK := prices[string(edge.From)]
-		toPrice, toOK := prices[string(edge.To)]
+	// First pass: invalidate edges that failed to get a direct quote
+	// This is critical - without a valid quote, we can't trust the edge rate
+	for _, edgeRate := range edgeRates {
+		if edgeRate.Error != nil {
+			// Set rate to 0 to invalidate this edge
+			// This ensures any cycle containing this edge will have ratio = 0 (not profitable)
+			d.HandleNetRateUpdate(edgeRate.From, edgeRate.To, 0, 0)
+		}
+	}
 
-		if fromOK && toOK && fromPrice > 0 && toPrice > 0 {
-			// Calculate rate: fromPrice / toPrice
-			rate := fromPrice / toPrice
+	// Second pass: update edges with valid direct quotes
+	for key, edgeRate := range edgeRates {
+		if edgeRate.Error != nil {
+			continue // Already handled above
+		}
 
-			// Only update if rate has changed meaningfully (> 0.0001% to filter float noise)
-			// This uses relative difference to handle rates of different magnitudes
-			if rateChanged(edge.Rate, rate, 1e-6) {
-				// Use HandlePriceUpdate which increments stats and evaluates affected cycles
-				results := d.HandlePriceUpdate(string(edge.From), string(edge.To), rate, 0)
-				for _, r := range results {
-					if !seen[r.Cycle.ID] {
-						seen[r.Cycle.ID] = true
-						allResults = append(allResults, r)
-					}
+		// Get the current edge rate to check if it changed
+		edges := graph.Edges()
+		var currentRate float64
+		for _, e := range edges {
+			if string(e.From)+":"+string(e.To) == key {
+				currentRate = e.Rate
+				break
+			}
+		}
+
+		// Only update if rate has changed meaningfully
+		if rateChanged(currentRate, edgeRate.Rate, 1e-6) {
+			// Use HandleNetRateUpdate since DEX quotes already include fees
+			// This prevents double-counting fees in cycle evaluation
+			results := d.HandleNetRateUpdate(edgeRate.From, edgeRate.To, edgeRate.Rate, 0)
+			for _, r := range results {
+				if !seen[r.Cycle.ID] {
+					seen[r.Cycle.ID] = true
+					allResults = append(allResults, r)
 				}
 			}
 		}

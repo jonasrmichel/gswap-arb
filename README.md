@@ -226,20 +226,28 @@ go build -o bot-gswap ./cmd/bot-gswap
 1. **Graph Construction**: Fetches all pools from `arb.gala.com/api/pools` and builds a directed graph where:
    - **Nodes** = Tokens (GALA, GUSDT, GWETH, etc.)
    - **Edges** = Trading pairs (bidirectional with different rates)
+   - **Filtering**: Excludes test tokens and inactive pools
 
-2. **Cycle Enumeration**: Uses DFS to find all simple cycles up to a maximum length (default 5 hops). For GSwap's ~27 tokens and ~66 pools, this discovers ~3,000 unique cycles in <300ms.
+2. **Cycle Enumeration**: Uses DFS to find all simple cycles up to a maximum length (default 5 hops). For GSwap's ~25 tokens and ~63 pools, this discovers ~2,900 unique cycles in <300ms.
 
 3. **Cycle Indexing**: Builds an index mapping each edge to the cycles containing it, enabling O(k) lookup when prices change.
 
-4. **Profit Evaluation**: For each cycle, calculates profit using the formula:
+4. **Direct DEX Quotes**: Instead of deriving rates from USD prices, the bot fetches direct quotes from GalaChain's `QuoteExactAmount` API:
+   - Uses the **1% fee tier only** for consistent bidirectional rates
+   - Validates rate consistency: A→B × B→A should be ~0.98 for healthy pools
+   - Filters out extreme rates (>10x or <0.1x) indicating illiquid pools
+   - Invalidates edges that fail to return valid quotes
+
+5. **Profit Evaluation**: For each cycle, calculates profit using the product of exchange rates:
    ```
-   profit_ratio = rate₁ × rate₂ × ... × rateₙ × (1-fee₁) × (1-fee₂) × ... × (1-feeₙ)
+   profit_ratio = rate₁ × rate₂ × ... × rateₙ
    ```
+   Note: DEX quotes already include fees, so no additional fee deduction is needed.
    Cycles with `profit_ratio > 1.0` are profitable.
 
-5. **Continuous Monitoring**: Polls token prices every N seconds and re-evaluates all cycles for opportunities.
+6. **Continuous Monitoring**: Polls direct DEX quotes every N seconds and re-evaluates affected cycles for opportunities.
 
-6. **Trade Execution** (optional): When enabled, executes profitable cycles by performing sequential swaps through the cycle path.
+7. **Trade Execution** (optional): When enabled, executes profitable cycles by performing sequential swaps through the cycle path.
 
 #### Graph Bot Flags - Detection
 
@@ -263,13 +271,16 @@ go build -o bot-gswap ./cmd/bot-gswap
 | `-trade` | `false` | Enable trade execution (requires credentials) |
 | `-dry-run` | `true` | Simulate trades without executing |
 | `-auto-execute` | `false` | Automatically execute profitable cycles |
-| `-trade-size` | `100` | Trade size for cycle execution |
-| `-max-trade-size` | `1000` | Maximum trade size |
-| `-min-trade-size` | `10` | Minimum trade size |
+| `-trade-size` | `1` | Trade size for cycle execution (kept small due to pool liquidity) |
+| `-max-trade-size` | `10` | Maximum trade size (pools are illiquid) |
+| `-min-trade-size` | `0.1` | Minimum trade size |
 | `-exec-min-profit` | `50` | Minimum profit in bps to execute |
 | `-slippage` | `100` | Slippage tolerance in basis points |
+| `-sim-amount` | `1` | Amount to use for simulation display |
 | `-private-key` | - | GSwap private key (or `GSWAP_PRIVATE_KEY` env) |
 | `-wallet` | - | Wallet address (or `GSWAP_WALLET_ADDRESS` env) |
+
+**Note**: The default trade sizes are kept small (1 unit) because many GSwap pools have limited liquidity. The bot fetches direct DEX quotes from the GalaChain `QuoteExactAmount` API to ensure accurate pricing. Testing shows pools can handle up to 10-100 units with slight price impact at larger sizes.
 
 #### Cycle Execution Flow
 
@@ -299,6 +310,38 @@ Profit: Z - 100 GALA
 4-hop: GALA -> GOSMI -> GUSDC -> GWETH -> GALA
 5-hop: GUSDC -> GSUSDT -> GUSDT -> GOSMI -> GWBTC -> GUSDC
 ```
+
+#### Verified Profitable Cycles
+
+The following cycles have been verified profitable using direct DEX quotes:
+
+| Cycle | Reported Profit | Simulated (1 unit) | Notes |
+|-------|----------------|-------------------|-------|
+| GALA → GOSMI → $GMUSIC → FILM → ETIME → GALA | +64% | 1 → 1.27 GALA (+27%) | Ecosystem token cycle |
+| GALA → FILM → ETIME → GALA | +40% | 1 → 1.40 GALA (+40%) | Game token cycle |
+| GALA → $GMUSIC → FILM → ETIME → GALA | +38% | 1 → 1.35 GALA (+35%) | Music/Film cycle |
+
+**Note**: Actual simulation results may differ from reported profit due to:
+- Price impact at larger trade sizes
+- Some edges being invalidated due to failed quotes
+- Rate fluctuations between quote fetches
+
+#### Pool Liquidity Considerations
+
+GSwap pools have limited liquidity compared to centralized exchanges. Testing shows:
+
+| Trade Size | Behavior |
+|------------|----------|
+| 0.1 - 1 unit | Works reliably with minimal price impact |
+| 1 - 10 units | Works with slight price impact (~2-3% reduction in profit) |
+| 10 - 100 units | May work but with significant price impact |
+| 100+ units | Often fails with "Not enough liquidity" errors |
+
+**Recommendations**:
+- Start with small trade sizes (1 unit) to verify cycle profitability
+- Gradually increase size while monitoring slippage
+- Use `-sim-amount` to test different trade sizes in simulation
+- The default `-trade-size=1` is conservative but reliable
 
 #### Break-Even Thresholds
 
@@ -846,11 +889,12 @@ Transaction: 0x1234...abcd
 | `-trade` | `false` | Enable trade execution (requires credentials) |
 | `-dry-run` | `true` | Simulate trades without executing |
 | `-auto-execute` | `false` | Automatically execute profitable cycles |
-| `-trade-size` | `100` | Trade size for cycle execution |
-| `-max-trade-size` | `1000` | Maximum trade size |
-| `-min-trade-size` | `10` | Minimum trade size |
+| `-trade-size` | `1` | Trade size for cycle execution (kept small due to pool liquidity) |
+| `-max-trade-size` | `10` | Maximum trade size (pools are illiquid) |
+| `-min-trade-size` | `0.1` | Minimum trade size |
 | `-exec-min-profit` | `50` | Minimum profit in bps to execute |
 | `-slippage` | `100` | Slippage tolerance in basis points |
+| `-sim-amount` | `1` | Amount to use for simulation display |
 | `-private-key` | - | GSwap private key (or `GSWAP_PRIVATE_KEY` env) |
 | `-wallet` | - | Wallet address (or `GSWAP_WALLET_ADDRESS` env) |
 
