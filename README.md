@@ -197,28 +197,28 @@ go build -o gswap-trader ./cmd/bot-trader
 
 **Warning**: Live trading involves real funds. Always test thoroughly in dry-run mode first.
 
-### GSwap Graph Bot (DEX Cycle Detection)
+### GSwap Graph Bot (DEX Cycle Detection & Execution)
 
-The graph-based bot focuses solely on finding arbitrage cycles within GalaChain DEX (GSwap). It uses a pre-computed cycle enumeration algorithm for fast detection.
+The graph-based bot focuses solely on finding and executing arbitrage cycles within GalaChain DEX (GSwap). It uses a pre-computed cycle enumeration algorithm for fast detection and can automatically execute profitable cycles.
 
 ```bash
 # Build the graph bot
 go build -o bot-gswap ./cmd/bot-gswap
 
-# One-shot mode (evaluate once and exit)
+# Detection only (default)
 ./bot-gswap -continuous=false
 
-# Continuous monitoring with default settings
+# Continuous monitoring
 ./bot-gswap
 
-# Show graph structure at startup
-./bot-gswap -show-graph=true
+# Enable trading with dry-run (simulates trades)
+./bot-gswap -trade -dry-run
 
-# Show all enumerated cycles
-./bot-gswap -show-cycles=true
+# Enable trading with auto-execution (BE CAREFUL!)
+./bot-gswap -trade -dry-run=false -auto-execute -exec-min-profit=50
 
 # Custom settings
-./bot-gswap -max-cycle=4 -min-profit=20 -poll=10s
+./bot-gswap -max-cycle=4 -min-profit=20 -poll=10s -trade-size=500
 ```
 
 #### How Graph-Based Detection Works
@@ -239,13 +239,15 @@ go build -o bot-gswap ./cmd/bot-gswap
 
 5. **Continuous Monitoring**: Polls token prices every N seconds and re-evaluates all cycles for opportunities.
 
-#### Graph Bot Flags
+6. **Trade Execution** (optional): When enabled, executes profitable cycles by performing sequential swaps through the cycle path.
+
+#### Graph Bot Flags - Detection
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-api` | `https://arb.gala.com/api` | GSwap API URL |
 | `-max-cycle` | `5` | Maximum cycle length to detect |
-| `-min-profit` | `10` | Minimum profit in basis points |
+| `-min-profit` | `10` | Minimum profit in bps to report |
 | `-fee` | `100` | Default fee in basis points (1% = 100 bps) |
 | `-poll` | `5s` | Price polling interval |
 | `-continuous` | `true` | Run continuously (vs one-shot) |
@@ -253,6 +255,42 @@ go build -o bot-gswap ./cmd/bot-gswap
 | `-show-cycles` | `false` | Print all enumerated cycles |
 | `-log` | `bot-gswap.log` | Log file path (empty to disable) |
 | `-verbose` | `true` | Enable verbose output |
+
+#### Graph Bot Flags - Trading
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-trade` | `false` | Enable trade execution (requires credentials) |
+| `-dry-run` | `true` | Simulate trades without executing |
+| `-auto-execute` | `false` | Automatically execute profitable cycles |
+| `-trade-size` | `100` | Trade size for cycle execution |
+| `-max-trade-size` | `1000` | Maximum trade size |
+| `-min-trade-size` | `10` | Minimum trade size |
+| `-exec-min-profit` | `50` | Minimum profit in bps to execute |
+| `-slippage` | `100` | Slippage tolerance in basis points |
+| `-private-key` | - | GSwap private key (or `GSWAP_PRIVATE_KEY` env) |
+| `-wallet` | - | Wallet address (or `GSWAP_WALLET_ADDRESS` env) |
+
+#### Cycle Execution Flow
+
+When trading is enabled, the bot executes cycles as follows:
+
+1. **Balance Check**: Verifies sufficient balance of the starting token
+2. **Sequential Swaps**: Executes each swap in the cycle path:
+   - Gets quote for current swap
+   - Applies slippage protection
+   - Submits swap transaction
+   - Waits for confirmation
+3. **Profit Calculation**: Compares output to input amount
+4. **Statistics Tracking**: Records success/failure and profit
+
+**Example execution** for cycle `GALA -> GUSDC -> GWETH -> GALA`:
+```
+Step 1: Swap 100 GALA -> ~X GUSDC
+Step 2: Swap X GUSDC -> ~Y GWETH
+Step 3: Swap Y GWETH -> ~Z GALA
+Profit: Z - 100 GALA
+```
 
 #### Example Cycles
 
@@ -786,11 +824,13 @@ Transaction: 0x1234...abcd
 
 #### GSwap Graph Bot (`./cmd/bot-gswap`)
 
+**Detection Flags:**
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-api` | `https://arb.gala.com/api` | GSwap API URL |
 | `-max-cycle` | `5` | Maximum cycle length to detect |
-| `-min-profit` | `10` | Minimum profit in basis points |
+| `-min-profit` | `10` | Minimum profit in bps to report |
 | `-fee` | `100` | Default fee in basis points (1% = 100 bps) |
 | `-poll` | `5s` | Price polling interval |
 | `-continuous` | `true` | Run continuously (vs one-shot) |
@@ -798,6 +838,21 @@ Transaction: 0x1234...abcd
 | `-show-cycles` | `false` | Print all enumerated cycles |
 | `-log` | `bot-gswap.log` | Log file path (empty to disable) |
 | `-verbose` | `true` | Enable verbose output |
+
+**Trading Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-trade` | `false` | Enable trade execution (requires credentials) |
+| `-dry-run` | `true` | Simulate trades without executing |
+| `-auto-execute` | `false` | Automatically execute profitable cycles |
+| `-trade-size` | `100` | Trade size for cycle execution |
+| `-max-trade-size` | `1000` | Maximum trade size |
+| `-min-trade-size` | `10` | Minimum trade size |
+| `-exec-min-profit` | `50` | Minimum profit in bps to execute |
+| `-slippage` | `100` | Slippage tolerance in basis points |
+| `-private-key` | - | GSwap private key (or `GSWAP_PRIVATE_KEY` env) |
+| `-wallet` | - | Wallet address (or `GSWAP_WALLET_ADDRESS` env) |
 
 #### Bridge CLI (`./cmd/bridge`)
 
@@ -1190,7 +1245,7 @@ BINANCE_MAX_TRADE_SIZE=100
 - [x] Cross-chain arbitrage detection with volatility-aware risk adjustment
 - [x] Solana DEX support via Jupiter aggregator
 - [x] Graph-based DEX cycle detection for GSwap
-- [ ] Trade execution for graph-detected cycles
+- [x] Trade execution for graph-detected cycles
 - [ ] Cross-chain arbitrage execution (Phase 5)
 - [ ] Historical opportunity tracking and analytics
 - [ ] Telegram/Discord notifications
