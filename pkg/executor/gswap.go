@@ -52,25 +52,34 @@ type gswapToken struct {
 	Decimals     int
 }
 
-// gswapQuoteRequest is the request for quoting.
-type gswapQuoteRequest struct {
-	TokenIn    string `json:"tokenIn"`
-	TokenOut   string `json:"tokenOut"`
-	AmountIn   string `json:"amountIn"`
-	Fee        int    `json:"fee,omitempty"`
-	WalletAddr string `json:"walletAddress,omitempty"`
+// gswapTokenClassKey represents a GalaChain token identifier.
+type gswapTokenClassKey struct {
+	Collection    string `json:"collection"`
+	Category      string `json:"category"`
+	Type          string `json:"type"`
+	AdditionalKey string `json:"additionalKey"`
 }
 
-// gswapQuoteResponse is the response from quoting API.
+// gswapQuoteRequest is the request for QuoteExactAmount API.
+type gswapQuoteRequest struct {
+	Token0     gswapTokenClassKey `json:"token0"`
+	Token1     gswapTokenClassKey `json:"token1"`
+	ZeroForOne bool               `json:"zeroForOne"`
+	Fee        int                `json:"fee"`
+	Amount     string             `json:"amount"`
+}
+
+// gswapQuoteResponse is the response from QuoteExactAmount API.
 type gswapQuoteResponse struct {
-	Data *gswapQuoteData `json:"Data"`
+	Status int             `json:"Status"`
+	Data   *gswapQuoteData `json:"Data"`
 }
 
 type gswapQuoteData struct {
-	AmountOut    string  `json:"amountOut"`
-	CurrentPrice float64 `json:"currentPrice"`
-	PriceImpact  float64 `json:"priceImpact"`
-	FeeTier      int     `json:"feeTier"`
+	Amount0          string `json:"amount0"`
+	Amount1          string `json:"amount1"`
+	CurrentSqrtPrice string `json:"currentSqrtPrice"`
+	NewSqrtPrice     string `json:"newSqrtPrice,omitempty"`
 }
 
 // gswapSwapRequest is the request for executing a swap.
@@ -121,19 +130,19 @@ func NewGSwapExecutor(privateKeyHex, walletAddress string) (*GSwapExecutor, erro
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
-	// Derive address if not provided
-	if walletAddress == "" {
-		publicKey := privateKey.Public().(*ecdsa.PublicKey)
-		walletAddress = crypto.PubkeyToAddress(*publicKey).Hex()
-	}
+	// Derive address if not provided - always derive from private key to ensure correct checksum
+	publicKey := privateKey.Public().(*ecdsa.PublicKey)
+	derivedAddress := crypto.PubkeyToAddress(*publicKey)
 
-	// Normalize wallet address
-	if !strings.HasPrefix(walletAddress, "0x") {
+	// Use provided address for display, but always use checksummed version for GalaChain
+	if walletAddress == "" {
+		walletAddress = derivedAddress.Hex()
+	} else if !strings.HasPrefix(walletAddress, "0x") {
 		walletAddress = "0x" + walletAddress
 	}
 
-	// Create GalaChain address format
-	galaChainAddress := "eth|" + strings.TrimPrefix(walletAddress, "0x")
+	// Create GalaChain address format - must use checksummed address (mixed case) without 0x prefix
+	galaChainAddress := "eth|" + strings.TrimPrefix(derivedAddress.Hex(), "0x")
 
 	executor := &GSwapExecutor{
 		privateKey:       privateKey,
@@ -339,18 +348,26 @@ func (g *GSwapExecutor) PlaceMarketOrder(ctx context.Context, pair string, side 
 	}
 
 	// Get quote first
-	quote, err := g.getQuote(ctx, tokenIn, tokenOut, amountIn)
+	quote, zeroForOne, err := g.getQuote(ctx, tokenIn, tokenOut, amountIn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get quote: %w", err)
 	}
 
-	// Calculate minimum output with 1% slippage
+	// Calculate output amount based on direction
+	var outAmountStr string
+	if zeroForOne {
+		outAmountStr = strings.TrimPrefix(quote.Data.Amount1, "-")
+	} else {
+		outAmountStr = strings.TrimPrefix(quote.Data.Amount0, "-")
+	}
 	amountOut := new(big.Float)
-	amountOut.SetString(quote.Data.AmountOut)
+	amountOut.SetString(outAmountStr)
+
+	// Calculate minimum output with 1% slippage
 	minAmountOut := new(big.Float).Mul(amountOut, big.NewFloat(0.99)) // 1% slippage
 
 	// Execute swap
-	order, err := g.executeSwap(ctx, tokenIn, tokenOut, amountIn, minAmountOut, quote.Data.FeeTier)
+	order, err := g.executeSwap(ctx, tokenIn, tokenOut, amountIn, minAmountOut, gswapFeeTier100)
 	if err != nil {
 		return nil, err
 	}
@@ -471,50 +488,103 @@ func (g *GSwapExecutor) getGalaChainKey(symbol string) string {
 	return symbol + "|Unit|none|none"
 }
 
-// getQuote gets a quote for a swap.
-func (g *GSwapExecutor) getQuote(ctx context.Context, tokenIn, tokenOut string, amountIn *big.Float) (*gswapQuoteResponse, error) {
-	url := gswapQuotingAPI + "/QuoteExactInputSingle"
+// getQuote gets a quote for a swap using QuoteExactAmount API.
+// Returns the quote response and whether tokenIn is token0 (for parsing amounts).
+func (g *GSwapExecutor) getQuote(ctx context.Context, tokenIn, tokenOut string, amountIn *big.Float) (*gswapQuoteResponse, bool, error) {
+	url := gswapQuotingAPI + "/QuoteExactAmount"
+
+	// Parse token keys
+	tkIn := parseTokenClassKey(tokenIn)
+	tkOut := parseTokenClassKey(tokenOut)
+
+	// Sort tokens lexicographically by collection (API requires token0 < token1)
+	token0 := tkIn
+	token1 := tkOut
+	zeroForOne := true // selling token0 (tokenIn)
+	if tkIn.Collection > tkOut.Collection {
+		token0 = tkOut
+		token1 = tkIn
+		zeroForOne = false // selling token1 (tokenIn)
+	}
 
 	amountStr := amountIn.Text('f', 0) // Integer amount
 
-	reqBody := map[string]interface{}{
-		"tokenIn":  parseTokenClassKey(tokenIn),
-		"tokenOut": parseTokenClassKey(tokenOut),
-		"amountIn": amountStr,
+	// Try different fee tiers and pick the best result
+	feeTiers := []int{gswapFeeTier005, gswapFeeTier030, gswapFeeTier100}
+	var bestResp *gswapQuoteResponse
+	var bestAmount *big.Float
+
+	for _, fee := range feeTiers {
+		reqBody := gswapQuoteRequest{
+			Token0:     token0,
+			Token1:     token1,
+			ZeroForOne: zeroForOne,
+			Fee:        fee,
+			Amount:     amountStr,
+		}
+
+		jsonBody, err := json.Marshal(reqBody)
+		if err != nil {
+			continue
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := g.client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		var quoteResp gswapQuoteResponse
+		if err := json.Unmarshal(body, &quoteResp); err != nil {
+			continue
+		}
+
+		if quoteResp.Data == nil {
+			continue
+		}
+
+		// Determine output amount based on direction
+		var outAmountStr string
+		if zeroForOne {
+			// Selling token0, receiving token1
+			outAmountStr = strings.TrimPrefix(quoteResp.Data.Amount1, "-")
+		} else {
+			// Selling token1, receiving token0
+			outAmountStr = strings.TrimPrefix(quoteResp.Data.Amount0, "-")
+		}
+
+		outAmount, ok := new(big.Float).SetString(outAmountStr)
+		if !ok || outAmount.Sign() <= 0 {
+			continue
+		}
+
+		// Keep the best (highest output) quote
+		if bestAmount == nil || outAmount.Cmp(bestAmount) > 0 {
+			bestAmount = outAmount
+			bestResp = &quoteResp
+		}
 	}
 
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	if bestResp == nil {
+		return nil, false, fmt.Errorf("no valid quote from any fee tier")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var quoteResp gswapQuoteResponse
-	if err := json.Unmarshal(body, &quoteResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &quoteResp, nil
+	return bestResp, zeroForOne, nil
 }
 
 // executeSwap executes a swap transaction.
@@ -626,22 +696,22 @@ func (g *GSwapExecutor) signTransaction(data interface{}) (string, error) {
 	return "0x" + hex.EncodeToString(signature), nil
 }
 
-// parseTokenClassKey parses a token string into TokenClassKey format.
-func parseTokenClassKey(token string) map[string]string {
+// parseTokenClassKey parses a token string into gswapTokenClassKey format.
+func parseTokenClassKey(token string) gswapTokenClassKey {
 	parts := strings.Split(token, "|")
 	if len(parts) != 4 {
-		return map[string]string{
-			"collection":    token,
-			"category":      "Unit",
-			"type":          "none",
-			"additionalKey": "none",
+		return gswapTokenClassKey{
+			Collection:    token,
+			Category:      "Unit",
+			Type:          "none",
+			AdditionalKey: "none",
 		}
 	}
-	return map[string]string{
-		"collection":    parts[0],
-		"category":      parts[1],
-		"type":          parts[2],
-		"additionalKey": parts[3],
+	return gswapTokenClassKey{
+		Collection:    parts[0],
+		Category:      parts[1],
+		Type:          parts[2],
+		AdditionalKey: parts[3],
 	}
 }
 
@@ -667,13 +737,20 @@ func (g *GSwapExecutor) GetQuote(ctx context.Context, pair string, side OrderSid
 	}
 	amountIn = amount
 
-	quoteResp, err := g.getQuote(ctx, tokenIn, tokenOut, amountIn)
+	quoteResp, zeroForOne, err := g.getQuote(ctx, tokenIn, tokenOut, amountIn)
 	if err != nil {
 		return nil, err
 	}
 
+	// Calculate output amount based on direction
+	var outAmountStr string
+	if zeroForOne {
+		outAmountStr = strings.TrimPrefix(quoteResp.Data.Amount1, "-")
+	} else {
+		outAmountStr = strings.TrimPrefix(quoteResp.Data.Amount0, "-")
+	}
 	amountOut := new(big.Float)
-	amountOut.SetString(quoteResp.Data.AmountOut)
+	amountOut.SetString(outAmountStr)
 
 	// Calculate effective price
 	price := new(big.Float).Quo(amountOut, amountIn)
