@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ const (
 	gswapQuotingAPI    = "https://gateway-mainnet.galachain.com/api/asset/dexv3-contract"
 	gswapDexBackendAPI = "https://dex-backend-prod1.defi.gala.com"
 	gswapAssetsAPI     = "https://gateway-mainnet.galachain.com/api/asset/token-contract"
+	gswapBundlerAPI    = "https://bundle-backend-prod1.defi.gala.com/bundle"
 
 	// Fee tiers
 	gswapFeeTier005 = 500   // 0.05%
@@ -614,45 +616,104 @@ func (g *GSwapExecutor) getQuote(ctx context.Context, tokenIn, tokenOut string, 
 	return bestResp, zeroForOne, nil
 }
 
-// executeSwap executes a swap transaction.
+// executeSwap executes a swap transaction via the bundler API.
+// The SDK swap format uses token0/token1 (sorted) + zeroForOne direction flag.
 func (g *GSwapExecutor) executeSwap(ctx context.Context, tokenIn, tokenOut string, amountIn, minAmountOut *big.Float, feeTier int) (*Order, error) {
-	url := gswapQuotingAPI + "/ExactInputSingle"
-
 	if feeTier == 0 {
 		feeTier = gswapFeeTier100 // Default 1% fee tier
 	}
 
-	deadline := time.Now().Add(5 * time.Minute).Unix()
+	// Parse token keys
+	tkIn := parseTokenClassKey(tokenIn)
+	tkOut := parseTokenClassKey(tokenOut)
 
-	// Create the swap request
-	swapReq := map[string]interface{}{
-		"tokenIn":          parseTokenClassKey(tokenIn),
-		"tokenOut":         parseTokenClassKey(tokenOut),
-		"fee":              feeTier,
-		"amountIn":         amountIn.Text('f', 0),
-		"amountOutMinimum": minAmountOut.Text('f', 0),
-		"deadline":         deadline,
-		"recipient":        g.galaChainAddress,
+	// Sort tokens lexicographically to get token0/token1 (SDK requires sorted order)
+	token0 := tkIn
+	token1 := tkOut
+	zeroForOne := true // selling token0 to get token1
+	if tkIn.Collection > tkOut.Collection {
+		token0 = tkOut
+		token1 = tkIn
+		zeroForOne = false // selling token1 to get token0
 	}
 
-	// Sign the transaction
-	signature, err := g.signTransaction(swapReq)
+	// Generate unique key for transaction (SDK format: "galaswap - operation - <uuid>")
+	uniqueKey := fmt.Sprintf("galaswap - operation - %s", generateUUID())
+
+	// Amount is positive for exactIn (preserve full precision)
+	amountStr := formatBigFloat(amountIn)
+
+	// amountOutMinimum is negative in SDK format for exactIn swaps (preserve full precision)
+	minOutNegative := new(big.Float).Neg(minAmountOut)
+	amountOutMinStr := formatBigFloat(minOutNegative)
+
+	// sqrtPriceLimit depends on swap direction (from SDK constants)
+	sqrtPriceLimit := "0.000000000000000000094212147" // zeroForOne limit
+	if !zeroForOne {
+		sqrtPriceLimit = "18446050999999999999" // oneForZero limit
+	}
+
+	// Create the swap DTO matching SDK format exactly
+	// SDK uses: token0, token1, fee, amount, zeroForOne, sqrtPriceLimit, recipient, amountOutMinimum, amountInMaximum
+	// For exactIn swaps: amountInMaximum = amount (same value)
+	swapDto := map[string]interface{}{
+		"token0":           token0,
+		"token1":           token1,
+		"fee":              feeTier,
+		"amount":           amountStr,
+		"zeroForOne":       zeroForOne,
+		"sqrtPriceLimit":   sqrtPriceLimit,
+		"recipient":        g.galaChainAddress,
+		"amountOutMinimum": amountOutMinStr,
+		"amountInMaximum":  amountStr, // SDK includes this for exactIn swaps
+		"uniqueKey":        uniqueKey,
+	}
+
+	// Sign the DTO
+	signature, err := g.signTransaction(swapDto)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Add signature to request
-	signedReq := map[string]interface{}{
-		"dto":       swapReq,
-		"signature": signature,
+	// Build signed DTO with signature
+	signedDto := map[string]interface{}{
+		"token0":           token0,
+		"token1":           token1,
+		"fee":              feeTier,
+		"amount":           amountStr,
+		"zeroForOne":       zeroForOne,
+		"sqrtPriceLimit":   sqrtPriceLimit,
+		"recipient":        g.galaChainAddress,
+		"amountOutMinimum": amountOutMinStr,
+		"amountInMaximum":  amountStr,
+		"uniqueKey":        uniqueKey,
+		"signature":        signature,
 	}
 
-	jsonBody, err := json.Marshal(signedReq)
+	// Build string instructions for bundler (token balance keys for locking)
+	t0Key := fmt.Sprintf("%s$%s$%s$%s", token0.Collection, token0.Category, token0.Type, token0.AdditionalKey)
+	t1Key := fmt.Sprintf("%s$%s$%s$%s", token1.Collection, token1.Category, token1.Type, token1.AdditionalKey)
+	poolKey := fmt.Sprintf("$pool$%s$%s$%d", t0Key, t1Key, feeTier)
+	bal0Key := fmt.Sprintf("$tokenBalance$%s$%s", t0Key, g.galaChainAddress)
+	bal1Key := fmt.Sprintf("$tokenBalance$%s$%s", t1Key, g.galaChainAddress)
+	poolBal0Key := fmt.Sprintf("$tokenBalance$%s$%s", t0Key, poolKey)
+	poolBal1Key := fmt.Sprintf("$tokenBalance$%s$%s", t1Key, poolKey)
+
+	stringsInstructions := []string{poolKey, bal0Key, bal1Key, poolBal0Key, poolBal1Key}
+
+	// Build bundler request
+	bundlerReq := map[string]interface{}{
+		"method":              "Swap",
+		"signedDto":           signedDto,
+		"stringsInstructions": stringsInstructions,
+	}
+
+	jsonBody, err := json.Marshal(bundlerReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", gswapBundlerAPI, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -673,21 +734,26 @@ func (g *GSwapExecutor) executeSwap(ctx context.Context, tokenIn, tokenOut strin
 		return nil, fmt.Errorf("swap failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
+	// Parse response - bundler returns {data: "txId", message: "...", error: null}
 	var swapResp struct {
-		Data struct {
-			TransactionID string `json:"transactionId"`
-			Hash          string `json:"hash"`
-		} `json:"Data"`
+		Data    string `json:"data"`    // Transaction ID is directly in data field as string
+		Message string `json:"message"` // Success/error message
+		Error   bool   `json:"error"`   // Error flag
 	}
 
 	if err := json.Unmarshal(body, &swapResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("failed to decode response: %w (body: %s)", err, string(body))
 	}
 
-	txID := swapResp.Data.TransactionID
+	// Check for error flag
+	if swapResp.Error {
+		return nil, fmt.Errorf("swap failed: %s", swapResp.Message)
+	}
+
+	// Get transaction ID from data field
+	txID := swapResp.Data
 	if txID == "" {
-		txID = swapResp.Data.Hash
+		txID = uniqueKey // Fallback to our unique key
 	}
 
 	return &Order{
@@ -703,9 +769,10 @@ func (g *GSwapExecutor) executeSwap(ctx context.Context, tokenIn, tokenOut strin
 }
 
 // signTransaction signs a transaction for GalaChain.
+// GalaChain requires deterministic JSON serialization (sorted keys) before signing.
 func (g *GSwapExecutor) signTransaction(data interface{}) (string, error) {
-	// Serialize the data to JSON
-	jsonData, err := json.Marshal(data)
+	// Serialize to deterministic JSON (keys sorted alphabetically, recursively)
+	jsonData, err := serializeDeterministic(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to serialize data: %w", err)
 	}
@@ -719,8 +786,123 @@ func (g *GSwapExecutor) signTransaction(data interface{}) (string, error) {
 		return "", fmt.Errorf("failed to sign: %w", err)
 	}
 
-	// Return hex-encoded signature
-	return "0x" + hex.EncodeToString(signature), nil
+	// Format signature as r (32 bytes) + s (32 bytes) + v (1 byte)
+	// go-ethereum returns signature as [R || S || V] where V is 0 or 1
+	// GalaChain expects V to be 0x1b (27) or 0x1c (28)
+	if len(signature) != 65 {
+		return "", fmt.Errorf("invalid signature length: %d", len(signature))
+	}
+
+	// Adjust recovery param from 0/1 to 27/28 (0x1b/0x1c)
+	signature[64] += 27
+
+	return hex.EncodeToString(signature), nil
+}
+
+// serializeDeterministic serializes data to JSON with keys sorted alphabetically.
+// This is required for GalaChain signature verification.
+// Go's json.Marshal doesn't guarantee key order for maps, so we build JSON manually.
+func serializeDeterministic(data interface{}) ([]byte, error) {
+	// First convert to generic interface{} via JSON round-trip
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	var obj interface{}
+	if err := json.Unmarshal(jsonBytes, &obj); err != nil {
+		return nil, err
+	}
+
+	// Build JSON string with sorted keys
+	var buf bytes.Buffer
+	if err := writeValueSorted(&buf, obj); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// writeValueSorted recursively writes a value to the buffer with sorted keys.
+func writeValueSorted(buf *bytes.Buffer, v interface{}) error {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Get and sort keys
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			// Write key
+			keyJSON, _ := json.Marshal(k)
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			// Write value recursively
+			if err := writeValueSorted(buf, val[k]); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+	case []interface{}:
+		buf.WriteByte('[')
+		for i, item := range val {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := writeValueSorted(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+	default:
+		// For primitives, use standard JSON encoding
+		valJSON, err := json.Marshal(val)
+		if err != nil {
+			return err
+		}
+		buf.Write(valJSON)
+	}
+	return nil
+}
+
+// sortStrings sorts a slice of strings alphabetically (in place).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// generateUUID generates a v4 UUID string.
+func generateUUID() string {
+	uuid := make([]byte, 16)
+	rand.Read(uuid)
+	// Set version (4) and variant (RFC 4122)
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
+}
+
+// formatBigFloat formats a big.Float as a string, preserving decimal precision
+// and removing trailing zeros (matching SDK BigNumber.toFixed() behavior).
+func formatBigFloat(f *big.Float) string {
+	// Use enough precision to capture the full value
+	str := f.Text('f', 20)
+
+	// Remove trailing zeros after decimal point
+	if strings.Contains(str, ".") {
+		str = strings.TrimRight(str, "0")
+		str = strings.TrimRight(str, ".")
+	}
+
+	return str
 }
 
 // parseTokenClassKey parses a token string into gswapTokenClassKey format.
